@@ -113,7 +113,7 @@ RunStats World::run(u64 max_additional_events) {
             Event cp;
             cp.t = now_;
             cp.type = EvType::Checkpoint;
-            cp.b = state_hash();
+            cp.b = book_.state_hash();
             jappend(cp);
         }
         if (cfg_.hash_every_events && events_ % cfg_.hash_every_events == 0)

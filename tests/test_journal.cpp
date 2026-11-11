@@ -442,6 +442,10 @@ AX_TEST(replay_failure_status_is_preserved) {
     Order sell; sell.id=1; sell.account=1; sell.side=Side::Sell;
     sell.type=OrderType::Limit; sell.tif=Tif::GTC; sell.price=100;
     sell.qty=2; sell.leaves=2;
+    RefBook expected{RefBook::Options{}};
+    std::vector<Fill> fills;
+    CHECK(expected.add_order(sell, fills, nullptr));
+    const u64 correct_checkpoint_hash = expected.state_hash();
     for(int scenario=0;scenario<5;++scenario) {
         const std::string path=kArtDir+"/status_"+std::to_string(scenario)+".journal";
         auto writer=JournalWriter::create(path,42,0); CHECK(writer); if(!writer) return;
@@ -458,10 +462,18 @@ AX_TEST(replay_failure_status_is_preserved) {
             replacement.expiry=10;
             CHECK(writer.value.append(ev_book_replace(2,2,1,replacement)));
         } else if(scenario==3) {
-            Event checkpoint; checkpoint.type=EvType::Checkpoint; checkpoint.b=0;
+            // Deliberately wrong semantic hash, framed with a valid CRC by
+            // JournalWriter (not a damaged frame).
+            Event checkpoint; checkpoint.type=EvType::Checkpoint;
+            checkpoint.b=correct_checkpoint_hash ^ u64{1};
             CHECK(writer.value.append(checkpoint));
         }
         CHECK(writer.value.flush()); writer.value.close();
+        if(scenario==3) {
+            const auto verification=journal_verify(path);
+            CHECK(verification.clean);
+            CHECK_EQ(verification.records,2u);
+        }
         if(scenario==1) { auto* file=std::fopen(path.c_str(),"ab"); CHECK(file);
             if(file){std::fputc(1,file); std::fclose(file);} }
         if(scenario==4) { auto* file=std::fopen(path.c_str(),"r+b"); CHECK(file);
@@ -472,7 +484,12 @@ AX_TEST(replay_failure_status_is_preserved) {
             if(scenario==0) CHECK_EQ(replay.trade_mismatches,1u);
             if(scenario==1) CHECK_EQ(replay.status.code,Errc::JournalCorrupt);
             if(scenario==2) CHECK_EQ(replay.status.code,Errc::ProtocolInvalid);
-            if(scenario==3) CHECK_EQ(replay.checkpoint_mismatches,1u);
+            if(scenario==3) {
+                CHECK_EQ(replay.checkpoint_mismatches,1u);
+                CHECK_EQ(replay.trade_mismatches,0u);
+                CHECK_EQ(replay.status.code,Errc::Internal);
+                CHECK_EQ(replay.state_hash,correct_checkpoint_hash);
+            }
             if(scenario==4) CHECK_EQ(replay.status.code,Errc::JournalCorrupt);
         }
     }

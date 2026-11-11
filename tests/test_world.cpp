@@ -775,27 +775,57 @@ AX_TEST(world_fill_stage_decomposition) {
                 (unsigned long long)s.fill_latency_sum);
 }
 
-AX_TEST(world_journal_replay_book_matches) {
-    std::filesystem::create_directories("artifacts");
+AX_TEST(world_journal_checkpoints_replay_book_matches) {
+    std::filesystem::create_directories("artifacts/world_checkpoints");
     WorldConfig cfg = test_world_config();
     cfg.journal_events = true;
-    const std::string path = "artifacts/test_replay.journal";
+    cfg.checkpoint_every_events = 10;
+    cfg.max_events = 2000;
+    const std::string path = "artifacts/world_checkpoints/replay.journal";
     std::filesystem::remove(path);
     cfg.journal_path = path;
-    World w(cfg, 888);
-    RunStats s = w.run();
-    CHECK(s.trades > 0);
-    // replay the journal through the book-level replayer: the recomputed
-    // book must contain every order that was still resting at the end.
-    // (The world state hash additionally covers strategy/risk state.)
-    ReplayResult rep = replay_journal(path, BookImpl::Optimized, 0, nullptr);
-    CHECK(rep.status);
-    if (!rep.status)
-        std::printf("  replay problem: %s (ctx %llu)\n", to_cstr(rep.status.code),
-                    static_cast<unsigned long long>(rep.status.context));
-    CHECK_EQ(rep.trade_mismatches, 0u);
-    // the world's trades must equal the journaled prints recomputed
-    CHECK(rep.events_applied > 0);
+    u64 live_book_hash = 0;
+    RunStats stats;
+    {
+        World w(cfg, 888);
+        stats = w.run();
+        // World::state_hash() covers much more than the book. Use the
+        // snapshot's canonical ladder for the book-level replay contract.
+        live_book_hash = canonical_book_hash(w.capture_snapshot().book);
+    }
+    CHECK(stats.trades > 0);
+    CHECK_EQ(stats.events_processed, cfg.max_events);
+
+    auto reader = JournalReader::open(path);
+    CHECK(reader);
+    if (!reader) return;
+    u64 checkpoints = 0, adds = 0, prints = 0;
+    while (reader.value.has_next()) {
+        const auto ev = reader.value.next();
+        CHECK(ev);
+        if (!ev) return;
+        if (ev.value.type == EvType::Checkpoint) ++checkpoints;
+        if (ev.value.type == EvType::BookAdd) ++adds;
+        if (ev.value.type == EvType::TradePrint) ++prints;
+    }
+    CHECK(reader.value.eof());
+    CHECK(!reader.value.failed());
+    CHECK(checkpoints > 0);
+    CHECK_EQ(checkpoints, stats.events_processed / cfg.checkpoint_every_events);
+    CHECK(adds > 0);
+    CHECK(prints > 0);
+
+    const auto ref = replay_journal(path, BookImpl::Reference);
+    const auto opt = replay_journal(path, BookImpl::Optimized);
+    for (const auto& rep : {ref, opt}) {
+        CHECK(rep.status);
+        CHECK_EQ(rep.checkpoint_mismatches, 0u);
+        CHECK_EQ(rep.trade_mismatches, 0u);
+        CHECK(rep.events_applied > 0);
+        CHECK_EQ(rep.fills_recomputed, prints);
+        CHECK_EQ(rep.state_hash, live_book_hash);
+    }
+    CHECK_EQ(ref.state_hash, opt.state_hash);
 }
 
 

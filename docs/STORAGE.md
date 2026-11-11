@@ -22,6 +22,21 @@ payload:          canonical encoded Event (58B, fixed layout)
 * `journal_recover` truncates to the last verifiable frame boundary
 * ~66B/event measured on disk
 
+`EvType::Checkpoint` stores the canonical book hash (`ARBITERX/BOOK/1`) in
+payload slot `b`, verifying the book after all preceding journal inputs.
+Book-level replay checks this hash with either matching implementation.
+It does not verify complete World state; whole-world determinism, hash
+timelines and snapshot validation retain `World::state_hash()`
+(`ARBITERX/WORLD/3`). The journal layout is unchanged.
+
+Earlier World-generated journals with periodic checkpoints enabled incorrectly
+stored whole-world hashes in these records. Regenerate those journals from
+their original configuration, seed and toolchain with the corrected writer
+to obtain verifiable book checkpoints. Replay continues to reject mismatches;
+it does not guess the hash domain or silently accept unverifiable checkpoints.
+Journals without these buggy checkpoints and journals already containing
+canonical book checkpoints remain compatible.
+
 ## Snapshots / checkpoints (`journal/snapshot.cpp`)
 
 Canonical, implementation-independent: built from the `LadderView`, so

@@ -29,7 +29,7 @@ enum class EvType : u16 {
     TimerFire = 8,      // a= timer_id, b= kind (0=gtd expiry)
     RiskDecision = 9,   // a= order_id, b= decision (1 accept, 2 reject), c= reason code
     Fault = 10,         // a= fault kind, b= param
-    Checkpoint = 11,    // a= event seq, b= state hash
+    Checkpoint = 11,    // a= event seq, b= canonical book hash (not World state)
     Session = 12,       // a= subtype (1 connect, 2 disconnect, 3 recovery start, 4 recovered)
     Halt = 13,
 };

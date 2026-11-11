@@ -14,12 +14,12 @@ jobs:
       matrix:
         include:
           - name: gcc-13
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cc: gcc-13
             cxx: g++-13
             install: g++-13
           - name: clang-18
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cc: clang-18
             cxx: clang++-18
             install: clang-18
@@ -83,7 +83,7 @@ jobs:
         run: ./scripts/reproduce_all.sh
 
   sanitizers:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CC: clang-18
       CXX: clang++-18
