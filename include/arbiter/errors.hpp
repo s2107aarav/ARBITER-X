@@ -1,6 +1,7 @@
 #pragma once
-// Explicit error model. Core systems never throw across module boundaries and
-// never swallow failures; every fallible operation returns a Status or Result.
+// Explicit errors for validation, decoding, and I/O. World construction and
+// execution report invalid configuration and runtime failures with exceptions;
+// allocation failures may also propagate from allocating operations.
 
 #include "arbiter/types.hpp"
 #include <string_view>
