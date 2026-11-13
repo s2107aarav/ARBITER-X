@@ -88,6 +88,57 @@ AX_TEST(ref_basic_quoting_and_bests) {
     CHECK_EQ(v.asks[0].total_qty, 7);
 }
 
+AX_TEST(reference_book_copies_own_their_order_iterators) {
+    RefBook original(RefBook::Options{});
+    std::vector<Fill> fills;
+    CHECK(original.add_order(make_limit(1, Side::Buy, 99, 10), fills));
+    CHECK(original.add_order(make_limit(2, Side::Sell, 101, 20), fills));
+    RefBook copied(original);
+    CHECK(copied.find(1) != original.find(1));
+    CHECK(copied.cancel(1));
+    CHECK(original.has(1));
+    CHECK(copied.add_order(make_market(3, Side::Buy, 5), fills));
+    CHECK_EQ(copied.find(2)->leaves, 15u);
+    CHECK_EQ(original.find(2)->leaves, 20u);
+    RefBook assigned(RefBook::Options{});
+    assigned = original;
+    CHECK(assigned.cancel(2));
+    CHECK(original.has(2));
+    CHECK(check_book_invariants(original.to_ladder()));
+    CHECK(check_book_invariants(copied.to_ladder()));
+    CHECK(check_book_invariants(assigned.to_ladder()));
+}
+
+AX_TEST(restoration_rejects_nonresting_orders_and_capacity_overflow) {
+    RefBook ref(RefBook::Options{1});
+    OptBook opt(OptBook::Options{1, 1000, 1, 1});
+    const auto check = [&](auto& book) {
+        CHECK(!book.rest_order(make_market(1, Side::Buy, 10)));
+        CHECK(!book.rest_order(make_limit(1, Side::Buy, 99, 10, Tif::IOC)));
+        CHECK(book.rest_order(make_limit(1, Side::Buy, 99, 10)));
+        const auto hash = book.state_hash();
+        CHECK_EQ(book.rest_order(make_limit(2, Side::Buy, 98, 10)).code, Errc::Capacity);
+        CHECK_EQ(book.state_hash(), hash);
+    };
+    check(ref);
+    check(opt);
+}
+
+AX_TEST(ladder_decoder_rejects_counts_exceeding_encoded_bytes) {
+    for (bool orders : {false, true}) {
+        ByteWriter writer;
+        writer.put_u64(orders ? 1 : (1u << 20));
+        if (orders) {
+            writer.put_i64(100);
+            writer.put_u64(1);
+            writer.put_u64(1u << 24);
+        }
+        ByteReader reader(writer.data());
+        LadderView ladder;
+        CHECK(!decode_ladder(reader, ladder));
+    }
+}
+
 AX_TEST(ref_price_time_priority) {
     RefBook b{RefBook::Options{}};
     std::vector<Fill> fills;

@@ -102,6 +102,11 @@ Status restore_ladder(Replayer& rp, const LadderView& ladder, std::vector<Fill>&
 ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_seq,
                             const SnapshotData* base) {
     ReplayResult rep;
+    if ((impl != BookImpl::Reference && impl != BookImpl::Optimized) ||
+        (base && until_seq != 0 && base->last_event_seq > until_seq)) {
+        rep.status = fail(Errc::InvalidArgument);
+        return rep;
+    }
     std::unique_ptr<Replayer> replayer;
     std::vector<Fill> fills;
 
@@ -112,7 +117,12 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
 
     u64 skip_through_seq = 0;
     if (base) {
+        if (const Status st = check_book_invariants(base->ladder); !st) {
+            rep.status = fail(Errc::SnapshotInvalid, st.context);
+            return rep;
+        }
         skip_through_seq = base->last_event_seq;
+        rep.final_seq = skip_through_seq;
         rep.logical_t = base->logical_t;
         if (Status st = restore_ladder(*replayer, base->ladder, fills); !st) {
             rep.status = st;
@@ -126,14 +136,20 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
         return rep;
     }
     JournalReader& r = rd.value;
+    if (base && base->config_hash != r.header().config_hash) {
+        rep.status = fail(Errc::SnapshotInvalid, base->config_hash);
+        return rep;
+    }
+    u64 last_seen_seq = 0;
 
-    while (r.has_next()) {
+    while ((until_seq == 0 || last_seen_seq < until_seq) && r.has_next()) {
         auto evr = r.next();
         if (!evr) {
             rep.status = evr.status;
             break;
         }
         const Event& e = evr.value;
+        last_seen_seq = e.seq;
         rep.events_seen++;
         if (until_seq != 0 && e.seq > until_seq) break;
         if (e.seq <= skip_through_seq) continue;
@@ -182,6 +198,7 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
                     break;
                 }
                 rep.events_seen++;
+                last_seen_seq = pr.value.seq;
                 rep.final_seq = pr.value.seq;
                 if (pr.value.type != EvType::TradePrint || pr.value.a != f.taker_order_id ||
                     pr.value.b != f.maker_order_id || pr.value.c != f.qty || pr.value.p != f.price) {
@@ -192,6 +209,10 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
                 if (rep.status) rep.status = Status{Errc::Internal, rep.trade_mismatches};
                 break;
             }
+        } else if (e.type == EvType::TradePrint) {
+            ++rep.trade_mismatches;
+            rep.status = fail(Errc::JournalCorrupt, e.seq);
+            break;
         } else if (e.type == EvType::BookCancel) {
             const Status s = replayer->cancel(e.a);
             if (!s && s.code != Errc::NotFound) {  // NotFound reproduces a cancel of an already-filled order
@@ -204,12 +225,14 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
             // recomputed hash must match the recorded one.
             if (e.b != replayer->state_hash()) rep.checkpoint_mismatches++;
         }
-        // Other event types (Md*, Timer, Risk, Fault, Session, Halt, orphan
-        // TradePrints) carry no book input here; counted and skipped.
+        // Other event types (Md*, Timer, Risk, Fault, Session, Halt) carry
+        // no book input here; counted and skipped.
     }
 
     rep.state_hash = replayer->state_hash();
     if (r.failed() && rep.status) rep.status = r.error();
+    if (rep.status && last_seen_seq < skip_through_seq)
+        rep.status = fail(Errc::SequenceGap, skip_through_seq);
     if (rep.status && (rep.trade_mismatches || rep.checkpoint_mismatches))
         rep.status = fail(Errc::Internal, rep.trade_mismatches + rep.checkpoint_mismatches);
     return rep;

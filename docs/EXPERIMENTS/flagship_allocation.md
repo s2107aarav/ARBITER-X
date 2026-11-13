@@ -8,8 +8,8 @@
 - **Reproduce**: `arbiter flagship --reproduce <dir>/results.json`
   (bit-for-bit when compiler and platform provenance match; all per-seed state
   hashes + economics).
-- **Date**: 2026-11-01 (Holm step-down correction; simulated outcomes are
-  read from the authoritative regenerated artifacts).
+- **Date**: 2026-11-12 (regenerated after correcting self-trade accounting;
+  simulated outcomes are read from the authoritative artifacts).
 
 ## Question
 
@@ -42,18 +42,18 @@ H0: only the total matters. H1: placement matters.
   lots, all contrasts exactly 0, p=1): allocation has no effect under this
   null market. INTERPRETATION SCOPE: the regime contrast varies the taker
   process's dependence structure AND its realized intensity/sign structure
-  together (measured ~7x trade-count difference; the momentum archetype only
-  participates when sign runs emerge, k>=~0.85) — so the null result is
+  together. The momentum archetype participates when its sign-signal threshold
+  is reached, so the null result is
   NECESSARY but not SUFFICIENT evidence for the clustered-flow mechanism;
   it does not isolate dependence from intensity.
-* **Clustered (k=0.9)**: cells move: MM PnL ranges -466860.1 to -268855.0
-  ticks*qty, filled lots 25624.5–41108.5, markout -2.36 to -0.85 ticks. The
-  primary contrast (extremes) has mean paired diff -189050.5 ticks*qty
-  (-5.77 per filled lot; MATERIAL by the predefined threshold) but the
-  Holm-corrected p-value is 0.3516: NOT statistically significant at 8
+* **Clustered (k=0.9)**: cells move: MM PnL ranges -504663.8 to -223998.4
+  ticks*qty, filled lots 26389.8–37557.5, markout -2.60 to -0.75 ticks. The
+  primary contrast (extremes) has mean paired diff -122252.6 ticks*qty
+  (-4.00 per filled lot; MATERIAL by the predefined threshold) but the
+  Holm-corrected p-value is 0.1406: NOT statistically significant at 8
   seeds. 7/8 seed-level contrasts are negative; the differences remain
   heavy-tailed.
-* **Interference sensitivity (frozen vs reactive)**: under frozen flow the
+* **Interference sensitivity (frozen vs reactive)**: under frozen observation the
   clustered-regime point estimates shrink by an order of magnitude and the
   primary contrast is not material. The reactive-world point estimate is
   therefore observation-feedback-dependent, the central interpretation
@@ -66,7 +66,7 @@ H0: only the total matters. H1: placement matters.
 
 **UNCERTAIN / UNDERPOWERED.** H0 is NOT REJECTED at the primary contrast:
 the point estimate is economically large, but cross-seed variance swamps it
-(low power; report as uncertain; raw p=0.0391, Holm p=0.3516). The
+(low power; report as uncertain; raw p=0.0156, Holm p=0.1406). The
 Poisson null shows exactly zero placement sensitivity, so the instrument is
 not dead, but the flagship data do not license a
 non-fungibility claim at L=8µs in this market. How to read it:
@@ -84,8 +84,9 @@ non-fungibility claim at L=8µs in this market. How to read it:
   effect under the Poisson null while the clustered regime moves. Caveat:
   because the regimes also differ in intensity, a null-market effect being
   absent cannot by itself confirm the dependence-structure mechanism.
-- (C) economic threshold: point estimate material, CI includes 0,
-  reported as uncertain, not as a positive finding.
+- (C) economic threshold: the point estimate is material and the unadjusted
+  IID interval excludes zero, while the Holm-corrected primary test remains
+  inconclusive. It is reported as uncertain.
 - (D) interference instability: PARTIAL, frozen-mode effects are ~10x
   smaller; the reactive result is feedback-dependent (documented above).
 - (E) single-seed dependence: checked: 7/8 seed-level contrasts are negative;

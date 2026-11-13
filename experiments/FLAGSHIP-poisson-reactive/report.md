@@ -16,7 +16,7 @@ ONE-DIMENSIONAL SLICE of the 3-stage allocation simplex: the md-share axis {0..1
 
 flow_model=poisson (k=0: the memoryless null process, bit-identical to the historical simulator behavior)
 
-**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs (measured: ~7x trade-count difference at k=0.9; the momentum archetype only participates when sign runs emerge, k>=~0.85). The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
+**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs. The clustered process can produce sign signals that activate the momentum strategy. The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
 
 ## Replication
 
@@ -53,8 +53,8 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 | md0.000 → md1.000 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
 
 - primary contrast (md0.000 -> md1.000): mean paired MM PnL diff +0.0 ticks*qty (per-lot +0.00), Holm p=1.0000, not significant
-- economic materiality (primary): not material (threshold 1.00 ticks*qty/fill)
-- MM filled lots across the slice: 171.9 (all-observation) vs 171.9 (all-action): fill mechanics invariant to placement
+- economic materiality (primary): not material (threshold 1.00 ticks*qty/lot)
+- MM filled lots across the slice: 171.9 (md share 1) vs 171.9 (md share 0): fill mechanics invariant to placement
 - taker (momentum) PnL across the slice: 0.0 -> 0.0 (invariant)
 - taker primary-contrast paired PnL diff: +0.0 (se 0.0, perm p=1.0000) — not significant
 - H0 at the primary contrast: NOT REJECTED (placement effect small and not significant at this budget/regime — a valid negative result)

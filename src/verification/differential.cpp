@@ -2,6 +2,7 @@
 #include "arbiter/errors.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <filesystem>
 #include <unordered_set>
@@ -51,7 +52,10 @@ bool fills_equal(const std::vector<Fill>& a, const std::vector<Fill>& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
         if (a[i].maker_order_id != b[i].maker_order_id || a[i].price != b[i].price ||
-            a[i].qty != b[i].qty || a[i].maker_account != b[i].maker_account)
+            a[i].qty != b[i].qty || a[i].maker_account != b[i].maker_account ||
+            a[i].taker_order_id != b[i].taker_order_id || a[i].taker_account != b[i].taker_account ||
+            a[i].t != b[i].t || a[i].maker_liq != b[i].maker_liq ||
+            a[i].taker_side != b[i].taker_side || a[i].maker_side != b[i].maker_side)
             return false;
     }
     return true;
@@ -85,9 +89,10 @@ Report run_differential(const std::vector<Op>& ops, const Options& opts) {
         if (sref.code != sopt.code || sref.context != sopt.context) {
             ++rep.status_mismatches;
             diverge("status mismatch", sref.code != sopt.code ? static_cast<u64>(sref.code) : sref.context);
-        } else if (!fills_equal(fref, fopt)) {
+        } else if (!fills_equal(fref, fopt) ||
+                   (sref && (rref.filled != ropt.filled || rref.canceled != ropt.canceled))) {
             ++rep.fill_mismatches;
-            diverge("fill mismatch", fref.size() != fopt.size() ? fref.size() : fref[0].maker_order_id);
+            diverge("fill mismatch", fref.empty() || fref.size() != fopt.size() ? fref.size() : fref[0].maker_order_id);
         } else if (ref.best_bid() != opt.best_bid() || ref.best_ask() != opt.best_ask()) {
             ++rep.best_mismatches;
             diverge("best price mismatch", ref.best_bid());
@@ -293,23 +298,38 @@ Result<std::vector<Op>> ops_from_text(const std::string& text) {
     std::vector<Op> ops;
     size_t pos = 0;
     while (pos < text.size()) {
-        const size_t eol = text.find('\n', pos);
-        if (eol == std::string::npos) break;
-        const std::string line = text.substr(pos, eol - pos);
-        pos = eol + 1;
-        if (line.empty()) continue;
-        char kind = 0;
-        unsigned long long id = 0, qty = 0, target = 0;
-        unsigned acct = 0, side = 0, otype = 0, tif = 0;
-        long long price = 0;
-        if (std::sscanf(line.c_str(), "%c %llu %u %u %u %u %lld %llu %llu", &kind, &id, &acct,
-                        &side, &otype, &tif, &price, &qty, &target) != 9)
+        const size_t newline = text.find('\n', pos);
+        const size_t eol = newline == std::string::npos ? text.size() : newline;
+        std::string_view line(text.data() + pos, eol - pos);
+        pos = newline == std::string::npos ? text.size() : newline + 1;
+        const auto token = [&]() {
+            const size_t begin = line.find_first_not_of(" \t\r");
+            if (begin == std::string_view::npos) { line = {}; return std::string_view{}; }
+            line.remove_prefix(begin);
+            const size_t end = line.find_first_of(" \t\r");
+            const std::string_view result = line.substr(0, end);
+            line.remove_prefix(result.size());
+            return result;
+        };
+        const std::string_view kind = token();
+        if (kind.empty()) continue;
+        const auto number = [&](auto& value) {
+            const auto part = token();
+            if (part.empty()) return false;
+            const auto parsed = std::from_chars(part.data(), part.data() + part.size(), value);
+            return parsed.ec == std::errc{} && parsed.ptr == part.data() + part.size();
+        };
+        u64 id = 0, qty = 0, target = 0;
+        u32 acct = 0, side = 0, otype = 0, tif = 0;
+        i64 price = 0;
+        if (!number(id) || !number(acct) || !number(side) || !number(otype) ||
+            !number(tif) || !number(price) || !number(qty) || !number(target) || !token().empty())
             return ErrT<std::vector<Op>>(Errc::ProtocolInvalid, ops.size());
         Op op;
         op.target = target;
-        if (kind == 'A') op.kind = Op::Kind::Add;
-        else if (kind == 'C') op.kind = Op::Kind::Cancel;
-        else if (kind == 'R') op.kind = Op::Kind::Replace;
+        if (kind == "A") op.kind = Op::Kind::Add;
+        else if (kind == "C") op.kind = Op::Kind::Cancel;
+        else if (kind == "R") op.kind = Op::Kind::Replace;
         else return ErrT<std::vector<Op>>(Errc::ProtocolInvalid, ops.size());
         // range-validate the enum fields: a corrupt corpus file must be a
         // loud parse failure instead of feeding garbage to the books
@@ -355,7 +375,8 @@ SearchResult adversarial_search(u64 base_seed, u32 iterations, u32 ops_per_run,
             case 4: cand.qty_max = static_cast<u32>(std::clamp<int>(cand.qty_max + delta * 11, 1, 200)); break;
             case 5: cand.price_span = static_cast<u32>(std::clamp<int>(cand.price_span + delta * 91, 1, 1001)); break;
         }
-        for (u64 s = base_seed; s < base_seed + 2 && !res.found; ++s) {
+        for (u64 offset = 0; offset < 2 && !res.found; ++offset) {
+            const u64 s = base_seed + offset;
             ++res.seeds_tried;
             auto ops = random_ops_tuned(s, ops_per_run, cand);
             Report rep = run_differential(ops);
@@ -394,24 +415,29 @@ SearchResult adversarial_search(u64 base_seed, u32 iterations, u32 ops_per_run,
 std::pair<u64, u64> run_corpus(const std::string& corpus_dir) {
     u64 checked = 0, diverged = 0;
     std::error_code ec;
-    if (!std::filesystem::exists(corpus_dir, ec)) return {0, 0};
+    if (!std::filesystem::is_directory(corpus_dir, ec)) return {0, 1};
     std::vector<std::string> files;
     for (const auto& entry : std::filesystem::directory_iterator(corpus_dir, ec)) {
         if (entry.is_regular_file() && entry.path().extension() == ".ops")
             files.push_back(entry.path().string());
     }
+    if (ec) return {0, 1};
     std::sort(files.begin(), files.end());
     for (const std::string& f : files) {
         std::FILE* fh = std::fopen(f.c_str(), "rb");
-        if (!fh) continue;
+        ++checked;
+        if (!fh) { ++diverged; continue; }
         std::string text;
         char buf[4096];
         size_t n;
-        while ((n = std::fread(buf, 1, sizeof buf, fh)) > 0) text.append(buf, n);
+        while ((n = std::fread(buf, 1, sizeof buf, fh)) > 0) {
+            text.append(buf, n);
+            if (n < sizeof buf || std::ferror(fh) || std::feof(fh)) break;
+        }
+        const bool read_error = std::ferror(fh) != 0;
         std::fclose(fh);
         auto ops = ops_from_text(text);
-        if (!ops) continue;
-        ++checked;
+        if (read_error || !ops) { ++diverged; continue; }
         Report rep = run_differential(ops.value);
         if (rep.diverged) ++diverged;
     }

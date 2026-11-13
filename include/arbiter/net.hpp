@@ -62,7 +62,7 @@ public:
     // INTERPRETED, never whether they happen, so enabling loss (or dup,
     // reorder, corrupt, jitter) cannot shift the draw alignment of any
     // other dimension for this or any later message. Tests:
-    // tests/test_quant.cpp (network_draw_alignment_*).
+    // tests/test_world.cpp (network_draw_alignment_*).
     DeliveryPlan next_delivery() {
         // All 7 draws first, in fixed order.
         const bool loss_draw = rng_.chance(prof_.loss_rate);

@@ -109,25 +109,16 @@ public:
         // breach the cap. Opposite-side reservations do NOT net (no
         // assumptions about fill sequencing).
         const i64 signed_qty = is_buy(o.side) ? static_cast<i64>(o.qty) : -static_cast<i64>(o.qty);
-        const auto safe_add = [](i64 a, i64 b) {
-            if (b > 0 && a > std::numeric_limits<i64>::max() - b)
-                return std::numeric_limits<i64>::max();
-            if (b < 0 &&
-                (b == std::numeric_limits<i64>::min() ||
-                 a < std::numeric_limits<i64>::min() - b))
-                return std::numeric_limits<i64>::min();
-            return a + b;
-        };
         i64 outstanding_same_side = 0;
         for (const auto& [id, r] : reservations_) {
             (void)id;
             if (r.account == o.account &&
                 ((r.signed_qty > 0) == is_buy(o.side))) {
-                outstanding_same_side = safe_add(outstanding_same_side, r.signed_qty);
+                outstanding_same_side = saturating_add_i64(outstanding_same_side, r.signed_qty);
             }
         }
-        const i64 projected = safe_add(safe_add(st.position, outstanding_same_side), signed_qty);
-        if (projected > cfg_.max_position || projected < -cfg_.max_position)
+        const i64 projected = saturating_add_i64(saturating_add_i64(st.position, outstanding_same_side), signed_qty);
+        if (cfg_.max_position < 0 || projected > cfg_.max_position || projected < -cfg_.max_position)
             return reject(kRiskMaxPosition);
         if (o.type == OrderType::Limit) {
             if (o.price <= 0 || o.qty > static_cast<Qty>(std::numeric_limits<i64>::max() / o.price))
@@ -137,7 +128,7 @@ public:
         }
         // rate limit: drop timestamps outside the window, then count
         // (per account: each strategy gets its own message budget)
-        while (!st.window.empty() && st.window.front() <= now - cfg_.rate_window_ns)
+        while (!st.window.empty() && st.window.front() <= saturating_sub_i64(now, cfg_.rate_window_ns))
             st.window.erase(st.window.begin());
         if (st.window.size() >= cfg_.max_msgs_per_window) return reject(kRiskRateLimit);
         st.window.push_back(now);
@@ -147,14 +138,7 @@ public:
 
     void note_fill(i64 signed_qty, u32 account) {
         i64& position = st_[account].position;
-        if (signed_qty > 0 && position > std::numeric_limits<i64>::max() - signed_qty)
-            position = std::numeric_limits<i64>::max();
-        else if (signed_qty < 0 &&
-                 (signed_qty == std::numeric_limits<i64>::min() ||
-                  position < std::numeric_limits<i64>::min() - signed_qty))
-            position = std::numeric_limits<i64>::min();
-        else
-            position += signed_qty;
+        position = saturating_add_i64(position, signed_qty);
     }
 
     // ---- working-order exposure reservations (exchange-time lifecycle) ----
@@ -171,10 +155,9 @@ public:
         if (r.signed_qty > 0)
             r.signed_qty -= static_cast<i64>(std::min<Qty>(qty, static_cast<Qty>(r.signed_qty)));
         else {
-            const i64 magnitude = r.signed_qty == std::numeric_limits<i64>::min()
-                                      ? std::numeric_limits<i64>::max()
-                                      : -r.signed_qty;
-            r.signed_qty += static_cast<i64>(std::min<Qty>(qty, static_cast<Qty>(magnitude)));
+            const u64 magnitude = static_cast<u64>(-(r.signed_qty + 1)) + 1;
+            if (qty >= magnitude) r.signed_qty = 0;
+            else r.signed_qty += static_cast<i64>(qty);
         }
         if (r.signed_qty == 0) reservations_.erase(it);
     }
@@ -200,22 +183,13 @@ public:
     };
     Aggregates state() const {
         Aggregates a;
-        const auto add_i64 = [](i64 x, i64 y) {
-            if (y > 0 && x > std::numeric_limits<i64>::max() - y)
-                return std::numeric_limits<i64>::max();
-            if (y < 0 &&
-                (y == std::numeric_limits<i64>::min() ||
-                 x < std::numeric_limits<i64>::min() - y))
-                return std::numeric_limits<i64>::min();
-            return x + y;
-        };
         const auto add_u64 = [](u64 x, u64 y) {
             return std::numeric_limits<u64>::max() - x < y ? std::numeric_limits<u64>::max()
                                                             : x + y;
         };
         for (const auto& [acct, st] : st_) {
             (void)acct;
-            a.position = add_i64(a.position, st.position);
+            a.position = saturating_add_i64(a.position, st.position);
             a.accepted = add_u64(a.accepted, st.accepted);
             a.rejected = add_u64(a.rejected, st.rejected);
             for (size_t i = 0; i <= kRiskDuplicateId; ++i)

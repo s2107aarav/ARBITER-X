@@ -329,7 +329,7 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
             return bad(41);
         if (resting.size() != ids.size()) return bad(41);
     }
-    if (s.next_book_seq == 0) return bad(42);
+    if (s.next_book_seq <= resting.size()) return bad(42);
 
     // ---- MD packet attempts: unique ids below the counter ----
     {
@@ -468,6 +468,7 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
                 prev = t;
             }
         }
+        std::sort(accts.begin(), accts.end());
         if (std::adjacent_find(accts.begin(), accts.end()) != accts.end()) return bad(49);
     }
 
@@ -514,6 +515,7 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         for (const auto& o : s.mm.own) {
             if (o.id == 0) return bad(52);
             if (o.side > 1) return bad(52);
+            if (o.confirmed > 1 || o.confirm_seq > s.mm.confirm_seq_counter) return bad(52);
             if (o.price <= 0 || o.leaves == 0) return bad(52);
             ids.push_back(o.id);
         }

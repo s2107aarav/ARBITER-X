@@ -26,7 +26,7 @@ int main() {
   std::string error;
   if(!arbiter::apply_world_override(cfg,"fee_per_lot","0",error)) return 2;
   arbiter::World world(cfg,42); world.run();
-  return world.state_hash()==12505037182163188822ull ? 0 : 1;
+  return world.state_hash()==6809973681660007760ull ? 0 : 1;
 }
 ]=])
 execute_process(COMMAND "${CMAKE_COMMAND}" -S "${root}/source" -B "${root}/build" "-DCMAKE_PREFIX_PATH=${root}/relocated prefix" "-DCMAKE_CXX_COMPILER=${COMPILER}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF RESULT_VARIABLE result)

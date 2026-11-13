@@ -135,6 +135,90 @@ AX_TEST(journal_roundtrip_events) {
     CHECK_EQ(rep.last_seq, 1000u);
 }
 
+AX_TEST(journal_close_and_move_preserve_buffered_records) {
+    std::filesystem::create_directories(kArtDir);
+    for (int mode = 0; mode < 3; ++mode) {
+        const std::string path = kArtDir + "/close_" + std::to_string(mode) + ".journal";
+        {
+            auto writer = JournalWriter::create(path, 1, 123);
+            CHECK(writer);
+            if (!writer) return;
+            CHECK(writer.value.append(ev_book_cancel(0, 0, 1)));
+            if (mode == 0) writer.value.close();
+            if (mode == 1) writer.value = JournalWriter{};
+        }
+        const auto report = journal_verify(path);
+        CHECK(report.clean);
+        CHECK_EQ(report.records, 1u);
+    }
+}
+
+AX_TEST(replay_validates_snapshot_identity_and_sequence) {
+    std::filesystem::create_directories(kArtDir);
+    const std::string path = kArtDir + "/base_identity.journal";
+    auto writer = JournalWriter::create(path, 42, 123);
+    CHECK(writer); if (!writer) return;
+    CHECK(writer.value.append(ev_book_cancel(0, 10, 1)));
+    CHECK(writer.value.flush());
+    SnapshotData base;
+    base.config_hash = 123;
+    base.last_event_seq = 1;
+    base.logical_t = 10;
+    for (auto impl : {BookImpl::Reference, BookImpl::Optimized}) {
+        const auto replay = replay_journal(path, impl, 1, &base);
+        CHECK(replay.status);
+        CHECK_EQ(replay.final_seq, 1u);
+        CHECK_EQ(replay.logical_t, 10);
+        auto invalid = base;
+        invalid.config_hash = 999;
+        CHECK(!replay_journal(path, impl, 0, &invalid).status);
+        invalid = base;
+        invalid.last_event_seq = 2;
+        CHECK(!replay_journal(path, impl, 0, &invalid).status);
+        CHECK(!replay_journal(path, impl, 1, &invalid).status);
+    }
+}
+
+AX_TEST(replay_rejects_unmatched_trade_prints) {
+    std::filesystem::create_directories(kArtDir);
+    const std::string path = kArtDir + "/orphan_print.journal";
+    auto writer = JournalWriter::create(path, 42, 123);
+    CHECK(writer); if (!writer) return;
+    Event print;
+    print.type = EvType::TradePrint;
+    print.a = 1; print.b = 2; print.c = 10; print.p = 1500;
+    CHECK(writer.value.append(print));
+    CHECK(writer.value.flush());
+    for (auto impl : {BookImpl::Reference, BookImpl::Optimized}) {
+        const auto replay = replay_journal(path, impl);
+        CHECK(!replay.status);
+        CHECK_EQ(replay.trade_mismatches, 1u);
+    }
+}
+
+AX_TEST(checkpoint_store_accepts_single_digit_and_ignores_invalid_names) {
+    const std::string dir = kArtDir + "/names";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    CheckpointStore store(dir, 2);
+    SnapshotData snap;
+    snap.last_event_seq = 1;
+    CHECK(store.save(snap));
+    for (const char* name : {"ck_2junk.snap", "ck_-2.snap", "ck_03.snap", "ck_18446744073709551616.snap"}) {
+        const std::string path = dir + "/" + name;
+        FILE* f = std::fopen(path.c_str(), "wb");
+        CHECK(f);
+        if (f) std::fclose(f);
+    }
+    CHECK_EQ(store.available_seqs(), (std::vector<u64>{1}));
+    const auto loaded = store.load_at_or_before(1);
+    CHECK(loaded);
+    if (loaded) CHECK_EQ(loaded.value.last_event_seq, 1u);
+    snap.last_event_seq = 2; CHECK(store.save(snap));
+    snap.last_event_seq = 3; CHECK(store.save(snap));
+    CHECK_EQ(store.available_seqs(), (std::vector<u64>{2, 3}));
+}
+
 AX_TEST(journal_detects_corruption) {
     std::filesystem::create_directories(kArtDir);
     const std::string path = kArtDir + "/corrupt.journal";

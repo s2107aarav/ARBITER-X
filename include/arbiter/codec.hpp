@@ -18,6 +18,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace arbiter {
 
@@ -31,6 +32,9 @@ public:
     void put_u64(u64 v) { const size_t p = buf_.size(); buf_.resize(p + 8); std::memcpy(buf_.data() + p, &v, 8); }
     void put_i64(i64 v) { put_u64(static_cast<u64>(v)); }
     void put_bytes(const void* p, size_t n) {
+        if (n == 0) return;
+        if (n > buf_.max_size() - buf_.size()) throw std::length_error("byte buffer size overflow");
+        if (p == nullptr) throw std::invalid_argument("null byte source");
         const size_t old = buf_.size();
         buf_.resize(old + n);
         std::memcpy(buf_.data() + old, p, n);
@@ -51,7 +55,7 @@ private:
 
 class ByteReader {
 public:
-    ByteReader(const u8* p, size_t n) noexcept : p_(p), n_(n) {}
+    ByteReader(const u8* p, size_t n) noexcept : p_(p), n_(n), ok_(p != nullptr || n == 0) {}
     explicit ByteReader(const std::string& s) noexcept
         : p_(reinterpret_cast<const u8*>(s.data())), n_(s.size()) {}
 
@@ -77,11 +81,11 @@ public:
     }
 
     bool get_bytes(void* out, size_t n) {
-        if (!ok_ || n > remaining()) {
+        if (!ok_ || n > remaining() || (out == nullptr && n != 0)) {
             ok_ = false;
             return false;
         }
-        std::memcpy(out, p_ + pos_, n);
+        if (n != 0) std::memcpy(out, p_ + pos_, n);
         pos_ += n;
         return true;
     }

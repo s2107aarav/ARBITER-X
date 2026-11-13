@@ -6,6 +6,26 @@
 
 namespace arbiter {
 
+RefBook::RefBook(const RefBook& other)
+    : bids_(other.bids_), asks_(other.asks_), next_book_seq_(other.next_book_seq_), opt_(other.opt_) {
+    index_.reserve(other.index_.size());
+    const auto index_side = [&](auto& levels) {
+        for (auto& [price, level] : levels)
+            for (auto it = level.fifo.begin(); it != level.fifo.end(); ++it)
+                index_.emplace(it->id, Loc{it->side, price, it});
+    };
+    index_side(bids_);
+    index_side(asks_);
+}
+
+RefBook& RefBook::operator=(const RefBook& other) {
+    if (this != &other) {
+        RefBook copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
 namespace {
 // Effective cross-detection limit for a taker: market orders cross anything.
 Price effective_limit(const Order& o) noexcept {
@@ -201,8 +221,11 @@ LadderView RefBook::to_ladder() const {
 }
 
 Status RefBook::rest_order(const Order& o) {
+    if (o.type != OrderType::Limit || (o.tif != Tif::GTC && o.tif != Tif::GTD))
+        return fail(Errc::InvalidArgument, o.id);
     if (Status s = validate_order_entry(o, index_.count(o.id) != 0); !s) return s;
     if (o.qty == 0 || o.leaves == 0 || o.leaves > o.qty) return fail(Errc::OutOfRange, o.id);
+    if (index_.size() >= opt_.max_orders) return fail(Errc::Capacity, o.id);
     Order copy = o;
     copy.type = OrderType::Limit;
     rest(std::move(copy));

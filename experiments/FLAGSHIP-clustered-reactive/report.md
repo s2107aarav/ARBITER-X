@@ -16,7 +16,7 @@ ONE-DIMENSIONAL SLICE of the 3-stage allocation simplex: the md-share axis {0..1
 
 flow_model=clustered (post-trade intensity boost + trade-sign persistence, k=0.90; a minimal self-exciting mechanism with a bit-exact Poisson null — NOT a Hawkes process)
 
-**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs (measured: ~7x trade-count difference at k=0.9; the momentum archetype only participates when sign runs emerge, k>=~0.85). The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
+**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs. The clustered process can produce sign signals that activate the momentum strategy. The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
 
 ## Replication
 
@@ -28,35 +28,35 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 | cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
-| md0.000 | md+0,dec+4000,ord+4000 | -268855.0 | 34388.0 | -0.90 | 74220.8 | 1942.0 |
-| md0.125 | md+1000,dec+3500,ord+3500 | -311466.6 | 35969.2 | -0.93 | 78807.1 | 2215.8 |
-| md0.250 | md+2000,dec+3000,ord+3000 | -353521.4 | 34055.9 | -1.93 | 91658.0 | 2435.5 |
-| md0.375 | md+3000,dec+2500,ord+2500 | -374278.1 | 41108.5 | -1.77 | -18916.1 | 2600.9 |
-| md0.500 | md+4000,dec+2000,ord+2000 | -462092.4 | 34945.6 | -1.89 | 59361.5 | 2303.4 |
-| md0.625 | md+5000,dec+1500,ord+1500 | -320810.0 | 25624.5 | -0.85 | 184335.4 | 1562.8 |
-| md0.750 | md+6000,dec+1000,ord+1000 | -466860.1 | 35777.9 | -1.38 | 178810.8 | 2156.1 |
-| md0.875 | md+7000,dec+500,ord+500 | -358750.9 | 31897.9 | -2.36 | 135344.5 | 2330.4 |
-| md1.000 | md+8000,dec+0,ord+0 | -457905.5 | 31125.1 | -2.13 | 79433.5 | 2157.8 |
+| md0.000 | md+0,dec+4000,ord+4000 | -223998.4 | 34756.4 | -1.15 | 108881.1 | 1838.2 |
+| md0.125 | md+1000,dec+3500,ord+3500 | -304774.1 | 35923.2 | -1.32 | 52477.6 | 1972.8 |
+| md0.250 | md+2000,dec+3000,ord+3000 | -504663.8 | 35491.5 | -2.52 | 52192.4 | 2363.6 |
+| md0.375 | md+3000,dec+2500,ord+2500 | -341063.4 | 37557.5 | -1.63 | 1173.8 | 2388.9 |
+| md0.500 | md+4000,dec+2000,ord+2000 | -362678.0 | 29834.5 | -0.75 | 101567.6 | 1601.2 |
+| md0.625 | md+5000,dec+1500,ord+1500 | -347693.1 | 32311.2 | -0.93 | 50599.8 | 1789.0 |
+| md0.750 | md+6000,dec+1000,ord+1000 | -356130.9 | 29680.1 | -1.12 | 100350.2 | 1797.6 |
+| md0.875 | md+7000,dec+500,ord+500 | -369365.5 | 30230.0 | -2.60 | 51732.8 | 2091.0 |
+| md1.000 | md+8000,dec+0,ord+0 | -346251.0 | 26389.8 | -1.08 | 41299.9 | 1645.0 |
 
 ## Paired contrasts (MM PnL, b − a, per seed)
 
 | contrast | mean diff | 95% CI (iid) | p (perm) | p (Holm) | per-lot | significant | material |
 |---|---|---|---|---|---|---|---|
-| md0.000 → md0.125 | -42611.6 | [-137608.3, +52385.1] | 0.4844 | 1.0000 | -1.21 | no | yes |
-| md0.125 → md0.250 | -42054.8 | [-94801.0, +10691.5] | 0.1719 | 1.0000 | -1.20 | no | yes |
-| md0.250 → md0.375 | -20756.8 | [-169704.2, +128190.7] | 0.8203 | 1.0000 | -0.55 | no | no |
-| md0.375 → md0.500 | -87814.2 | [-246886.3, +71257.8] | 0.3125 | 1.0000 | -2.31 | no | yes |
-| md0.500 → md0.625 | +141282.4 | [-34071.8, +316636.6] | 0.1797 | 1.0000 | +4.67 | no | yes |
-| md0.625 → md0.750 | -146050.1 | [-344627.8, +52527.6] | 0.1484 | 1.0000 | -4.76 | no | yes |
-| md0.750 → md0.875 | +108109.2 | [-86482.7, +302701.2] | 0.3516 | 1.0000 | +3.19 | no | yes |
-| md0.875 → md1.000 | -99154.6 | [-337866.2, +139556.9] | 0.5234 | 1.0000 | -3.15 | no | yes |
-| md0.000 → md1.000 | -189050.5 | [-355363.2, -22737.8] | 0.0391 | 0.3516 | -5.77 | no | yes |
+| md0.000 → md0.125 | -80775.8 | [-147060.3, -14491.2] | 0.0391 | 0.3125 | -2.29 | no | yes |
+| md0.125 → md0.250 | -199889.6 | [-338729.1, -61050.2] | 0.0469 | 0.3281 | -5.60 | no | yes |
+| md0.250 → md0.375 | +163600.4 | [+19672.9, +307527.9] | 0.0781 | 0.4688 | +4.48 | no | yes |
+| md0.375 → md0.500 | -21614.6 | [-79221.2, +35992.0] | 0.5234 | 1.0000 | -0.64 | no | no |
+| md0.500 → md0.625 | +14984.9 | [-92886.7, +122856.5] | 0.8438 | 1.0000 | +0.48 | no | no |
+| md0.625 → md0.750 | -8437.8 | [-124822.8, +107947.3] | 0.8984 | 1.0000 | -0.27 | no | no |
+| md0.750 → md0.875 | -13234.6 | [-123757.9, +97288.6] | 0.8047 | 1.0000 | -0.44 | no | no |
+| md0.875 → md1.000 | +23114.5 | [-65267.2, +111496.2] | 0.6016 | 1.0000 | +0.82 | no | no |
+| md0.000 → md1.000 | -122252.6 | [-212367.3, -32137.9] | 0.0156 | 0.1406 | -4.00 | no | yes |
 
-- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff -189050.5 ticks*qty (per-lot -5.77), Holm p=0.3516, not significant
-- economic materiality (primary): MATERIAL (threshold 1.00 ticks*qty/fill)
-- MM filled lots across the slice: 31125.1 (all-observation) vs 34388.0 (all-action): placement changes fill mechanics
-- taker (momentum) PnL across the slice: 74220.8 -> 79433.5 (moves)
-- taker primary-contrast paired PnL diff: +5212.8 (se 102694.5, perm p=0.9375) — not significant
+- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff -122252.6 ticks*qty (per-lot -4.00), Holm p=0.1406, not significant
+- economic materiality (primary): MATERIAL (threshold 1.00 ticks*qty/lot)
+- MM filled lots across the slice: 26389.8 (md share 1) vs 34756.4 (md share 0): placement changes fill mechanics
+- taker (momentum) PnL across the slice: 108881.1 -> 41299.9 (moves)
+- taker primary-contrast paired PnL diff: -67581.2 (se 90422.2, perm p=0.5000) — not significant
 - H0 at the primary contrast: NOT REJECTED — point estimate is economically large but cross-seed variance swamps it (low power; report as uncertain, do NOT interpret the sign as an effect)
 
 ## Falsification status

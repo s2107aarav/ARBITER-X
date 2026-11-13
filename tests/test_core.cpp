@@ -6,9 +6,13 @@
 #include "arbiter/flatmap.hpp"
 #include "arbiter/hash.hpp"
 #include "arbiter/histogram.hpp"
+#include "arbiter/codec.hpp"
+#include "arbiter/metrics.hpp"
 #include "arbiter/rng.hpp"
 
 #include <map>
+#include <limits>
+#include <stdexcept>
 #include <unordered_map>
 #include <string>
 
@@ -101,6 +105,69 @@ AX_TEST(histogram_percentiles) {
     CHECK(s.p99 > 985 && s.p99 <= 1000);
     CHECK_EQ(s.mn, 1.0);
     CHECK_EQ(s.mx, 1000.0);
+}
+
+AX_TEST(histogram_queries_do_not_change_future_sampling) {
+    Histogram observed(8), untouched(8);
+    for (int i = 0; i < 100; ++i) {
+        const double value = (i * 37) % 101;
+        observed.record(value);
+        untouched.record(value);
+        (void)observed.summarize();
+    }
+    for (double p : {0.0, 0.1, 0.5, 0.9, 1.0})
+        CHECK_EQ(observed.percentile(p), untouched.percentile(p));
+    observed.reset();
+    untouched.reset();
+    Histogram fresh(8);
+    for (int i = 0; i < 100; ++i) { observed.record(i); fresh.record(i); }
+    CHECK_EQ(observed.percentile(0.5), fresh.percentile(0.5));
+    Histogram empty_reservoir(0);
+    empty_reservoir.record(1);
+    CHECK_EQ(empty_reservoir.percentile(0.5), 0.0);
+    CHECK_EQ(empty_reservoir.mean(), 1.0);
+}
+
+AX_TEST(histogram_rejects_invalid_percentiles) {
+    Histogram histogram;
+    histogram.record(1);
+    for (double p : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN()}) {
+        bool caught = false;
+        try { (void)histogram.percentile(p); }
+        catch (const std::invalid_argument&) { caught = true; }
+        CHECK(caught);
+    }
+}
+
+AX_TEST(empty_byte_ranges_and_json_strings_are_valid) {
+    ByteWriter writer;
+    writer.put_bytes(nullptr, 0);
+    CHECK_EQ(writer.size(), 0u);
+    ByteReader reader(nullptr, 0);
+    CHECK(reader.get_bytes(nullptr, 0));
+    CHECK(reader.ok());
+    ByteReader invalid(nullptr, 1);
+    CHECK_EQ(invalid.get_u8(), 0u);
+    CHECK(!invalid.ok());
+    writer.put_u8(1);
+    bool caught = false;
+    try { writer.put_bytes("x", std::numeric_limits<size_t>::max()); }
+    catch (const std::length_error&) { caught = true; }
+    CHECK(caught);
+    CHECK_EQ(writer.size(), 1u);
+    const std::string json = runstats_to_json(RunStats{}, "quoted\"name\\path\n");
+    CHECK(json.find("\"name\": \"quoted\\\"name\\\\path\\u000a\"") != std::string::npos);
+}
+
+AX_TEST(config_rejects_ambiguous_keys_and_sections) {
+    for (const char* text : {"x=2\nx=1\n", "=value\n", "[]=value\n", "[]\nx=1\n", "[bad[section]\nx=1\n"}) {
+        Status status;
+        (void)Config::from_string(text, &status);
+        CHECK(!status);
+    }
+    Status status;
+    (void)Config::from_string(std::string("x=1\0junk", 8), &status);
+    CHECK(!status);
 }
 
 AX_TEST(config_parse_and_getters) {

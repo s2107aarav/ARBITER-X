@@ -18,6 +18,10 @@ public:
     };
 
     explicit RefBook(const Options& opt) : opt_(opt) {}
+    RefBook(const RefBook& other);
+    RefBook& operator=(const RefBook& other);
+    RefBook(RefBook&&) noexcept = default;
+    RefBook& operator=(RefBook&&) noexcept = default;
 
     // Process an incoming order. Fills are appended to `fills` (caller-owned,
     // may be reused). Time priority: resting orders execute strictly FIFO

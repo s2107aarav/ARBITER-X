@@ -23,6 +23,10 @@ std::string_view trim(std::string_view s) {
 
 Config Config::from_string(std::string_view text, Status* st) {
     Config cfg;
+    if (text.find('\0') != std::string_view::npos) {
+        if (st) *st = fail(Errc::ConfigInvalid);
+        return cfg;
+    }
     std::string section;
     size_t lineno = 0;
     size_t pos = 0;
@@ -44,6 +48,10 @@ Config Config::from_string(std::string_view text, Status* st) {
                 return cfg;
             }
             section = std::string(trim(line.substr(1, line.size() - 2)));
+            if (section.empty() || section.find_first_of("[]") != std::string::npos) {
+                if (st) *st = fail(Errc::ConfigInvalid, lineno);
+                return cfg;
+            }
             continue;
         }
         size_t eq = line.find('=');
@@ -53,9 +61,17 @@ Config Config::from_string(std::string_view text, Status* st) {
         }
         std::string key(trim(line.substr(0, eq)));
         std::string value(trim(line.substr(eq + 1)));
+        if (key.empty() || key.find_first_of("[]") != std::string::npos) {
+            if (st) *st = fail(Errc::ConfigInvalid, lineno);
+            return cfg;
+        }
         // A section is a namespace: ALL its keys are prefixed (dotted or
         // not). Fully-qualified keys are written at top level (no section).
         if (!section.empty()) key = section + "." + key;
+        if (cfg.index_.contains(key)) {
+            if (st) *st = fail(Errc::ConfigInvalid, lineno);
+            return cfg;
+        }
         cfg.entries_.emplace_back(key, value);
         cfg.index_[key] = value;
     }
@@ -69,7 +85,10 @@ Result<Config> Config::from_file(const std::string& path) {
     std::string text;
     char buf[8192];
     size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
+        text.append(buf, n);
+        if (n < sizeof buf || std::ferror(f) || std::feof(f)) break;
+    }
     bool bad = std::ferror(f) != 0;
     std::fclose(f);
     if (bad) return ErrT<Config>(Errc::IoError, 0);

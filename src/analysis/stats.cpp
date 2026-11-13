@@ -125,15 +125,27 @@ std::vector<Fold> walk_forward(size_t n, size_t n_folds, double min_train_frac) 
     std::vector<Fold> folds;
     if (n_folds == 0 || n < 2 || !std::isfinite(min_train_frac)) return folds;
     min_train_frac = std::clamp(min_train_frac, 0.0, 1.0);
-    const size_t min_train = std::max<size_t>(
-        1, static_cast<size_t>(std::ceil(static_cast<double>(n) * min_train_frac)));
-    if (min_train >= n || n - min_train < n_folds) return folds;
+    const long double train_size = std::ceil(static_cast<long double>(n) * min_train_frac);
+    if (train_size >= static_cast<long double>(n)) return folds;
+    const size_t min_train = std::max<size_t>(1, static_cast<size_t>(train_size));
+    if (min_train >= n) return folds;
+    n_folds = std::min(n_folds, n - min_train);
     const size_t test_region = n - min_train;
+    size_t test_begin = min_train;
+    size_t remainder = 0;
+    const size_t extra = test_region % n_folds;
     for (size_t f = 0; f < n_folds; ++f) {
-        const size_t test_begin = min_train + f * test_region / n_folds;
-        const size_t test_end = min_train + (f + 1) * test_region / n_folds;
+        size_t width = test_region / n_folds;
+        if (remainder >= n_folds - extra) {
+            ++width;
+            remainder -= n_folds - extra;
+        } else {
+            remainder += extra;
+        }
+        const size_t test_end = test_begin + width;
         if (test_end == test_begin) continue;  // never emit an empty test range
         folds.push_back({0, test_begin, test_begin, test_end});
+        test_begin = test_end;
     }
     return folds;
 }

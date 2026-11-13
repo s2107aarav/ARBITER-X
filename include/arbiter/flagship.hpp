@@ -10,23 +10,23 @@
 //
 // DESIGN (see docs/EXPERIMENTS/flagship_allocation.md for the full record):
 //   * Grid: allocations on the md-share slice of the simplex at fixed L:
-//     x in {0, .125, .25, .375, .5, .625, .75, .875, 1} plus a balanced
-//     interior point. Every cell has the SAME total (exact invariant).
+//     x in {0, .125, .25, .375, .5, .625, .75, .875, 1}.
+//     Every cell has the SAME total (exact invariant).
 //   * Regimes: flow_model in {poisson, clustered}, the clustered regime
 //     arms taker self-excitation (the proposed mechanism); the Poisson
 //     regime is the falsification placebo.
 //   * Interference: bots_observe_shadow in {false (reactive), true
-//     (frozen exogenous flow)}, the flagship measures the reactive world;
+//     (frozen observation)}, the flagship measures the reactive world;
 //     the frozen mode quantifies interference sensitivity.
 //   * Replication: independent macro-seeds (whole simulated worlds). The
 //     seed is the unit of replication: NEVER within-world events.
-//   * Statistics: for every pair of allocation cells, the PAIRED difference
+//   * Statistics: for adjacent cells and the two extremes, the PAIRED difference
 //     per seed (common random numbers across cells: same master seed,
 //     shared seeded streams) is summarized with mean and IID seed-level CI,
 //     and a sign/permutation test across seeds. Multiple testing across the
 //     cell-pair family: Holm-Bonferroni. Statistical significance is
-//     reported strictly alongside economic effect size (ticks*qty per fill,
-//     per 1000 opportunities) and a predefined economic threshold.
+//     reported alongside economic effect size (ticks*qty per filled lot)
+//     and a predefined economic threshold.
 //
 // HONESTY RULES BAKED IN:
 //   * The engine-verified stage trace confirms every cell realized the
@@ -64,14 +64,10 @@ struct FlagshipConfig {
     std::vector<double> md_shares = {0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0};
     // market process
     FlowModel flow_model = FlowModel::Clustered;
-    // clustered regime intensity: k in [0,1). Each executed trade shortens
-    // the next taker inter-arrival by 1/(1-k) and takers follow the prior
-    // taker's side with prob k. CALIBRATION NOTE (measured, seed 2026,
-    // 100ms): sign runs long enough to trigger the momentum archetype
-    // (|sum signs| >= 3) only emerge for k >= ~0.85, below that, provider
-    // replenishment (60/ms) dominates taker pressure (8/ms) and trade
-    // prices alternate. Default 0.9 is where the mechanism is active; the
-    // report states this is a SIMULATOR PROPERTY, not a calibrated fact.
+    // Clustered regime intensity: k in [0,1). A trade multiplies the next
+    // taker inter-arrival by (1-k), and takers follow the previous taker's
+    // side with probability k. The retained clustered study uses k=0.9;
+    // this is a simulator parameter, not an empirical calibration.
     double taker_self_excitation = 0.9;
     // interference mode
     bool bots_observe_shadow = false;  // false = reactive world (flagship)

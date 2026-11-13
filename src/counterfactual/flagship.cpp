@@ -5,13 +5,18 @@
 #include "arbiter/build_info.hpp"
 #include "arbiter/rng.hpp"
 #include "arbiter/stats.hpp"
+#include "../core/json.hpp"
 
 #include <cmath>
 #include <cerrno>
 #include <cctype>
+#include <charconv>
 #include <limits>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,8 +45,8 @@ CellSeedOutcome run_one(const FlagshipConfig& fc, const LatencyAllocation& alloc
     World w(cfg, seed);
     const RunStats& s = w.run();
     CellSeedOutcome o;
-    o.mm_marked_pnl = s.mm_cash + s.mm_inventory * s.final_mid;
-    o.mom_marked_pnl = s.mom_cash + s.mom_inventory * s.final_mid;
+    o.mm_marked_pnl = saturating_add_i64(s.mm_cash, saturating_mul_i64(s.mm_inventory, s.final_mid));
+    o.mom_marked_pnl = saturating_add_i64(s.mom_cash, saturating_mul_i64(s.mom_inventory, s.final_mid));
     o.mm_max_drawdown = s.mm_max_drawdown;
     o.mm_fills = s.strategy_fills;
     o.mm_filled_qty = s.mm_real_filled_qty;
@@ -71,6 +76,8 @@ CellSeedOutcome run_one(const FlagshipConfig& fc, const LatencyAllocation& alloc
 std::string cell_name(double md_share) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "md%.3f", md_share);
+    if (std::strtod(buf + 2, nullptr) != md_share)
+        std::snprintf(buf, sizeof buf, "md%.17g", md_share);
     return buf;
 }
 
@@ -102,12 +109,32 @@ double permutation_pvalue(const std::vector<double>& d, u64 seed, size_t reps) {
         for (size_t i = 0; i < n; ++i) s += rng.chance(0.5) ? -d[i] : d[i];
         if (std::fabs(s) >= std::fabs(obs) - 1e-9) ++ge;
     }
-    return static_cast<double>(ge) / static_cast<double>(reps);
+    return (static_cast<double>(ge) + 1.0) / (static_cast<double>(reps) + 1.0);
 }
 
 }  // namespace
 
 FlagshipResult run_flagship(const FlagshipConfig& fc) {
+    if (fc.seeds.empty() || fc.md_shares.size() < 2 || fc.total_latency_ns < 0 ||
+        fc.permutation_reps == 0 ||
+        (fc.flow_model != FlowModel::Poisson && fc.flow_model != FlowModel::Clustered) ||
+        !std::isfinite(fc.taker_self_excitation) || fc.taker_self_excitation < 0.0 ||
+        fc.taker_self_excitation >= 1.0 ||
+        !std::isfinite(fc.economic_threshold_ticks_qty_per_lot) ||
+        fc.economic_threshold_ticks_qty_per_lot < 0.0 ||
+        fc.economic_threshold_ticks_qty_per_lot * 1e9 >= 18446744073709551616.0)
+        throw std::invalid_argument("invalid flagship definition");
+    if (std::set<u64>(fc.seeds.begin(), fc.seeds.end()).size() != fc.seeds.size())
+        throw std::invalid_argument("duplicate flagship seeds");
+    for (size_t i = 0; i < fc.md_shares.size(); ++i) {
+        const double share = fc.md_shares[i];
+        if (!std::isfinite(share) || share < 0.0 || share > 1.0 ||
+            (i > 0 && share <= fc.md_shares[i - 1]))
+            throw std::invalid_argument("flagship md shares must increase within [0,1]");
+        const WorldConfig cfg = allocation_on_slice(fc.total_latency_ns, share).apply_to(base_world_config(fc));
+        if (const std::string invalid = cfg.validate(); !invalid.empty())
+            throw std::invalid_argument("invalid flagship world: " + invalid);
+    }
     FlagshipResult res;
     res.cfg = fc;
     res.flow_model_name = fc.flow_model == FlowModel::Poisson ? "poisson" : "clustered";
@@ -191,8 +218,8 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         for (size_t k = 0; k < nseeds; ++k) {
             const CellSeedOutcome& a = res.cells[ia].per_seed[k];
             const CellSeedOutcome& b = res.cells[ib].per_seed[k];
-            p.mm_pnl_diff.push_back(static_cast<double>(b.mm_marked_pnl - a.mm_marked_pnl));
-            p.mom_pnl_diff.push_back(static_cast<double>(b.mom_marked_pnl - a.mom_marked_pnl));
+            p.mm_pnl_diff.push_back(static_cast<double>(static_cast<long double>(b.mm_marked_pnl) - a.mm_marked_pnl));
+            p.mom_pnl_diff.push_back(static_cast<double>(static_cast<long double>(b.mom_marked_pnl) - a.mom_marked_pnl));
             p.mm_fills_diff.push_back(signed_fill_count_difference(b.mm_fills, a.mm_fills));
             p.mm_markout_diff.push_back(b.mm_markout_100us - a.mm_markout_100us);
         }
@@ -213,7 +240,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         res.pairs.push_back(std::move(p));
     };
     for (size_t i = 0; i + 1 < res.cells.size(); ++i) add_pair(i, i + 1);
-    if (res.cells.size() >= 2) add_pair(0, res.cells.size() - 1);  // primary
+    if (res.cells.size() > 2) add_pair(0, res.cells.size() - 1);  // primary
 
     std::vector<double> raw_p;
     raw_p.reserve(res.pairs.size());
@@ -227,7 +254,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
     // narrative, each statement is computed from the data.
     {
         char b[256];
-        // primary contrast = extremes (md0.000 vs md1.000), always present
+        // Primary contrast compares the endpoints of the supplied grid.
         const PairComparison& prim = res.pairs.back();
         std::snprintf(b, sizeof b,
                       "primary contrast (%s -> %s): mean paired MM PnL diff %+.1f ticks*qty "
@@ -237,7 +264,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
                       prim.statistically_significant ? "significant" : "not significant");
         res.findings.push_back(b);
         std::snprintf(b, sizeof b,
-                      "economic materiality (primary): %s (threshold %.2f ticks*qty/fill)",
+                      "economic materiality (primary): %s (threshold %.2f ticks*qty/lot)",
                       prim.economically_material ? "MATERIAL" : "not material",
                       fc.economic_threshold_ticks_qty_per_lot);
         res.findings.push_back(b);
@@ -245,8 +272,8 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         const double f_lo = res.cells.front().mean_mm_filled_qty;
         const double f_hi = res.cells.back().mean_mm_filled_qty;
         std::snprintf(b, sizeof b,
-                      "MM filled lots across the slice: %.1f (all-observation) vs %.1f "
-                      "(all-action): %s", f_hi, f_lo,
+                      "MM filled lots across the slice: %.1f (md share %.3g) vs %.1f "
+                      "(md share %.3g): %s", f_hi, fc.md_shares.back(), f_lo, fc.md_shares.front(),
                       std::fabs(f_hi - f_lo) > 1e-9 ? "placement changes fill mechanics"
                                                     : "fill mechanics invariant to placement");
         res.findings.push_back(b);
@@ -281,6 +308,10 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
             std::snprintf(b, sizeof b,
                           "H0 (total-only sufficiency) at the primary contrast: REJECTED "
                           "(significant after Holm AND economically material)");
+        } else if (prim.statistically_significant) {
+            std::snprintf(b, sizeof b,
+                          "H0 at the primary contrast: REJECTED after Holm; effect is "
+                          "below the predefined economic threshold");
         } else if (prim.economically_material && !prim.statistically_significant) {
             std::snprintf(b, sizeof b,
                           "H0 at the primary contrast: NOT REJECTED — point estimate is "
@@ -300,17 +331,47 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
 
 namespace {
 
-// minimal-scanner helpers (same discipline as experiment.cpp: our own
-// format only, anything unexpected is an error, never a guess)
+// Scanners for the canonical artifact format emitted below.
 bool scan_key(const std::string& text, const std::string& key, std::string& out) {
     const std::string pat = "\"" + key + "\": \"";
     size_t pos = text.find(pat);
     if (pos == std::string::npos) return false;
     pos += pat.size();
-    const size_t end = text.find('"', pos);
-    if (end == std::string::npos) return false;
-    out = text.substr(pos, end - pos);
-    return true;
+    out.clear();
+    while (pos < text.size()) {
+        char ch = text[pos++];
+        if (ch == '"') return true;
+        if (static_cast<unsigned char>(ch) < 0x20) return false;
+        if (ch == '\\') {
+            if (pos == text.size()) return false;
+            ch = text[pos++];
+            switch (ch) {
+                case '"': case '\\': case '/': break;
+                case 'n': ch = '\n'; break;
+                case 'r': ch = '\r'; break;
+                case 't': ch = '\t'; break;
+                case 'b': ch = '\b'; break;
+                case 'f': ch = '\f'; break;
+                case 'u': {
+                    if (pos + 4 > text.size() || text.substr(pos, 2) != "00") return false;
+                    const auto digit = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        return -1;
+                    };
+                    const int hi = digit(text[pos + 2]), lo = digit(text[pos + 3]);
+                    if (hi < 0 || lo < 0) return false;
+                    ch = static_cast<char>(hi * 16 + lo);
+                    pos += 4;
+                    break;
+                }
+                default: return false;
+            }
+        }
+        out += ch;
+    }
+    return false;
 }
 
 bool scan_num(const std::string& text, const std::string& key, double& out) {
@@ -325,15 +386,16 @@ bool scan_num(const std::string& text, const std::string& key, double& out) {
     return *end==',' || *end==']' || *end=='}';
 }
 
-bool scan_int(const std::string& text, const std::string& key, u64& out) {
+template <class Integer>
+bool scan_int(const std::string& text, const std::string& key, Integer& out) {
     const std::string pat = "\"" + key + "\": ";
     size_t pos = text.find(pat);
     if (pos == std::string::npos) return false;
     pos += pat.size();
-    const char* start=text.c_str()+pos; char* end=nullptr; errno=0;
-    if(*start=='-') return false;
-    out = std::strtoull(start, &end, 10);
-    if(errno==ERANGE || end==start) return false;
+    const char* start = text.data() + pos;
+    const auto parsed = std::from_chars(start, text.data() + text.size(), out);
+    if (parsed.ec != std::errc{}) return false;
+    const char* end = parsed.ptr;
     while(std::isspace(static_cast<unsigned char>(*end))) ++end;
     return *end==',' || *end==']' || *end=='}';
 }
@@ -344,9 +406,13 @@ bool read_file(const std::string& path, std::string& out) {
     out.clear();
     char buf[4096];
     size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
+        out.append(buf, n);
+        if (n < sizeof buf || std::ferror(f) || std::feof(f)) break;
+    }
+    const bool read_error = std::ferror(f) != 0;
     std::fclose(f);
-    return !out.empty();
+    return !read_error && !out.empty();
 }
 
 bool write_file(const std::string& path, const std::string& content) {
@@ -361,11 +427,11 @@ bool write_file(const std::string& path, const std::string& content) {
 std::string flagship_to_json(const FlagshipResult& r) {
     char buf[1024];
     std::string out = "{\n";
-    out += "  \"experiment\": \"" + r.cfg.name + "\",\n";
+    out += "  \"experiment\": " + json_quote(r.cfg.name) + ",\n";
     std::snprintf(buf, sizeof buf, "  \"definition_hash\": %llu,\n  \"total_latency_ns\": %lld,\n",
                   (unsigned long long)r.definition_hash, (long long)r.cfg.total_latency_ns);
     out += buf;
-    out += "  \"flow_model\": \"" + r.flow_model_name + "\",\n";
+    out += "  \"flow_model\": " + json_quote(r.flow_model_name) + ",\n";
     std::snprintf(buf, sizeof buf,
                   "  \"taker_self_excitation\": %.17g,\n  \"bots_observe_shadow\": %s,\n",
                   r.cfg.taker_self_excitation,
@@ -387,11 +453,11 @@ std::string flagship_to_json(const FlagshipResult& r) {
         out += buf;
     }
     out += "],\n";
-    out += "  \"compiler\": \"" + r.compiler + "\",\n  \"platform\": \"" + r.platform + "\",\n";
-    out += "  \"created_utc\": \"" + r.created_utc + "\",\n";
-    out += "  \"core_version\": \"" + r.core_version + "\",\n";
-    out += "  \"core_revision\": \"" + r.core_revision + "\",\n";
-    out += "  \"core_source_state\": \"" + r.core_source_state + "\",\n";
+    out += "  \"compiler\": " + json_quote(r.compiler) + ",\n  \"platform\": " + json_quote(r.platform) + ",\n";
+    out += "  \"created_utc\": " + json_quote(r.created_utc) + ",\n";
+    out += "  \"core_version\": " + json_quote(r.core_version) + ",\n";
+    out += "  \"core_revision\": " + json_quote(r.core_revision) + ",\n";
+    out += "  \"core_source_state\": " + json_quote(r.core_source_state) + ",\n";
     out += "  \"cells\": [\n";
     for (size_t c = 0; c < r.cells.size(); ++c) {
         const CellResult& cell = r.cells[c];
@@ -444,7 +510,7 @@ std::string flagship_to_json(const FlagshipResult& r) {
     }
     out += "  ],\n  \"findings\": [\n";
     for (size_t i = 0; i < r.findings.size(); ++i) {
-        out += "    \"" + r.findings[i] + "\"";
+        out += "    " + json_quote(r.findings[i]);
         if (i + 1 < r.findings.size()) out += ",";
         out += "\n";
     }
@@ -482,9 +548,9 @@ std::string flagship_report_md(const FlagshipResult& r) {
     }
     out += "\n\n**Regime-contrast scope (limitation):** the two flow regimes "
            "differ in the taker process's dependence structure AND consequently in "
-           "realized intensity and trade-sign runs (measured: ~7x trade-count "
-           "difference at k=0.9; the momentum archetype only participates when sign "
-           "runs emerge, k>=~0.85). The placebo therefore shows \"allocation has no "
+           "realized intensity and trade-sign runs. The clustered process can "
+           "produce sign signals that activate the momentum strategy. The placebo "
+           "therefore shows \"allocation has no "
            "effect under THIS null market\"; it does NOT isolate which aspect of the "
            "clustered process (dependence vs intensity) would drive any clustered-"
            "regime effect.\n\n";
@@ -493,8 +559,8 @@ std::string flagship_report_md(const FlagshipResult& r) {
            "seed (common random numbers): same master seed, same named streams.\n\n";
     out += "## Interference mode\n\n";
     out += r.cfg.bots_observe_shadow
-               ? "frozen (bots see a shadow touch excluding strategy orders; bot flow is "
-                 "exogenous to the strategies)\n\n"
+               ? "frozen observation (bots see a shadow touch excluding strategy orders; "
+                 "matching and trade feedback remain)\n\n"
                : "reactive (bots observe the live touch and react to strategy quotes; the "
                  "measured effect includes market feedback — interference sensitivity is "
                  "probed by re-running frozen)\n\n";
@@ -583,19 +649,28 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
     }
     i64 total_ns = 0;
     {
-        double v = 0;
-        if (!scan_num(text, "total_latency_ns", v) || v<0 || v>=9223372036854775808.0) {
+        if (!scan_int(text, "total_latency_ns", total_ns) || total_ns < 0) {
             rep.detail = "missing total_latency_ns";
             return rep;
         }
-        total_ns = static_cast<i64>(v);
     }
     double self_exc = 0;
     if (!scan_num(text, "taker_self_excitation", self_exc)) {
         rep.detail = "missing taker_self_excitation";
         return rep;
     }
-    bool shadow = text.find("\"bots_observe_shadow\": true") != std::string::npos;
+    bool shadow = false;
+    {
+        const std::string key = "\"bots_observe_shadow\": ";
+        const auto at = text.find(key);
+        if (at == std::string::npos) { rep.detail = "missing bots_observe_shadow"; return rep; }
+        size_t pos = at + key.size();
+        if (text.compare(pos, 4, "true") == 0) { shadow = true; pos += 4; }
+        else if (text.compare(pos, 5, "false") == 0) pos += 5;
+        else { rep.detail = "invalid bots_observe_shadow"; return rep; }
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+        if (pos == text.size() || text[pos] != ',') { rep.detail = "invalid bots_observe_shadow"; return rep; }
+    }
     // seeds array
     std::vector<u64> seeds;
     {
@@ -605,20 +680,19 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
             return rep;
         }
         size_t p = pos + 10;
-        while (p < text.size() && text[p] != ']') {
-            if (text[p] >= '0' && text[p] <= '9') {
-                u64 v = 0;
-                while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
-                    const u64 digit=static_cast<u64>(text[p++]-'0');
-                    if(v>(std::numeric_limits<u64>::max()-digit)/10) {
-                        rep.detail="seed overflow"; return rep;
-                    }
-                    v=v*10+digit;
-                }
-                seeds.push_back(v);
-            } else {
-                ++p;
-            }
+        while (true) {
+            while (p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) ++p;
+            if (p == text.size()) { rep.detail = "incomplete seeds"; return rep; }
+            if (text[p] == ']' && seeds.empty()) break;
+            u64 seed = 0;
+            const auto parsed = std::from_chars(text.data() + p, text.data() + text.size(), seed);
+            if (parsed.ec != std::errc{}) { rep.detail = "invalid seed"; return rep; }
+            p = static_cast<size_t>(parsed.ptr - text.data());
+            seeds.push_back(seed);
+            while (p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) ++p;
+            if (p == text.size()) { rep.detail = "incomplete seeds"; return rep; }
+            if (text[p] == ']') break;
+            if (text[p++] != ',') { rep.detail = "invalid seeds separator"; return rep; }
         }
     }
     // cells: (name, md_share, per-seed final_hash, mm_pnl, filled_qty, mom_pnl)
@@ -642,11 +716,13 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
             if (p == std::string::npos || p > text.find("\"pairs\"", pos)) break;
             RepCell cell;
             const size_t nend = text.find('"', p + 10);
+            if (nend == std::string::npos) { rep.detail = "invalid cell name"; return rep; }
             cell.name = text.substr(p + 10, nend - (p + 10));
-            if(!scan_num(text.substr(p, text.find("]},", p) - p), "md_share", cell.md_share) ||
+            if(!scan_num(text.substr(p, text.find("]}", p) - p), "md_share", cell.md_share) ||
                cell.md_share<0 || cell.md_share>1) { rep.detail="invalid md_share"; return rep; }
             // per-seed records inside this cell
-            const size_t cell_end = text.find("]},", p);
+            const size_t cell_end = text.find("]}", p);
+            if (cell_end == std::string::npos) { rep.detail = "incomplete cell"; return rep; }
             std::string rec = text.substr(p, cell_end == std::string::npos
                                                    ? std::string::npos
                                                    : cell_end - p);
@@ -661,25 +737,18 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
                    !scan_int(record,"final_hash",hash)) {
                     rep.detail="cell seed order/count/hash mismatch"; return rep;
                 }
-                double mm=0,mom=0;
-                if(!scan_num(record,"mm_pnl",mm) || !scan_num(record,"mom_pnl",mom) ||
-                   mm < -9223372036854775808.0 || mm >= 9223372036854775808.0 ||
-                   mom < -9223372036854775808.0 || mom >= 9223372036854775808.0) {
+                i64 mm = 0, mom = 0;
+                if(!scan_int(record,"mm_pnl",mm) || !scan_int(record,"mom_pnl",mom)) {
                     rep.detail="invalid seed economics"; return rep;
                 }
                 cell.hash.push_back(hash);
-                cell.mm_pnl.push_back(static_cast<i64>(mm));
-                cell.mom_pnl.push_back(static_cast<i64>(mom));
+                cell.mm_pnl.push_back(mm);
+                cell.mom_pnl.push_back(mom);
                 q += 8;
             }
             if(cell.hash.size()!=seeds.size()) { rep.detail="cell seed count mismatch"; return rep; }
             cells.push_back(std::move(cell));
-            p = cell_end;
-            if (p == std::string::npos) break;
-            // advance past the seed-array close + cell close
-            p = text.find("]},", p);
-            if (p == std::string::npos) break;
-            p += 3;
+            p = cell_end + 2;
         }
     }
     if (cells.empty() || seeds.empty()) {
@@ -700,25 +769,30 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
     fc.md_shares.clear();
     for (const RepCell& c : cells) fc.md_shares.push_back(c.md_share);
     {
-        double v = 0;
         for (const char* key : {"horizon_ns", "warmup_ns"}) {
-            if (text.find(std::string("\"") + key + "\"") == std::string::npos) continue;
-            if (!scan_num(text, key, v) || v < -9223372036854775808.0 ||
-                v >= 9223372036854775808.0) {
+            i64 value = 0;
+            if (!scan_int(text, key, value)) {
                 rep.detail = std::string("invalid ") + key;
                 return rep;
             }
-            if (std::string(key) == "horizon_ns") fc.horizon_ns = static_cast<i64>(v);
-            else fc.warmup_ns = static_cast<i64>(v);
+            if (std::string(key) == "horizon_ns") fc.horizon_ns = value;
+            else fc.warmup_ns = value;
         }
-        if (scan_num(text, "economic_threshold", v))
-            fc.economic_threshold_ticks_qty_per_lot = v;
+        double v = 0;
+        if (!scan_num(text, "economic_threshold", v)) { rep.detail = "invalid economic_threshold"; return rep; }
+        fc.economic_threshold_ticks_qty_per_lot = v;
         u64 u = 0;
-        if (scan_int(text, "permutation_reps", u)) fc.permutation_reps = u;
-        if (scan_int(text, "hac_lag", u)) fc.hac_lag = static_cast<size_t>(u);
+        if (!scan_int(text, "permutation_reps", u)) { rep.detail = "invalid permutation_reps"; return rep; }
+        fc.permutation_reps = u;
+        if (!scan_int(text, "hac_lag", u) || u > std::numeric_limits<size_t>::max()) {
+            rep.detail = "invalid hac_lag"; return rep;
+        }
+        fc.hac_lag = static_cast<size_t>(u);
     }
 
-    const FlagshipResult res = run_flagship(fc);
+    FlagshipResult res;
+    try { res = run_flagship(fc); }
+    catch (const std::invalid_argument& error) { rep.detail = error.what(); return rep; }
     if (res.definition_hash != def_hash) {
         rep.detail = "definition_hash mismatch: rebuilt " + std::to_string(res.definition_hash) +
                      " vs artifact " + std::to_string(def_hash) +
@@ -736,6 +810,31 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
         }
     }
     rep.ok = rep.mismatches == 0;
+    if (rep.ok) {
+        // Verify every serialized outcome and contrast, including fields
+        // that do not participate in the causal state hash. Provenance is
+        // informational, so preserve the recorded values during comparison.
+        for (const auto& [key, value] : {
+                 std::pair{"compiler", &res.compiler}, std::pair{"platform", &res.platform},
+                 std::pair{"created_utc", &res.created_utc}, std::pair{"core_version", &res.core_version},
+                 std::pair{"core_revision", &res.core_revision}, std::pair{"core_source_state", &res.core_source_state}}) {
+            if (!scan_key(text, key, *value)) {
+                rep.ok = false;
+                ++rep.mismatches;
+                break;
+            }
+        }
+        const std::string expected = flagship_to_json(res);
+        auto payload = [](std::string_view value) {
+            while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+                value.remove_suffix(1);
+            return value;
+        };
+        if (rep.ok && payload(text) != payload(expected)) {
+            rep.ok = false;
+            ++rep.mismatches;
+        }
+    }
     if (!rep.ok)
         rep.detail = "mismatches: " + std::to_string(rep.mismatches);
     return rep;

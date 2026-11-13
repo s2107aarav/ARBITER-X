@@ -18,7 +18,9 @@
 #include "arbiter/rng.hpp"
 #include "arbiter/types.hpp"
 
+#include <algorithm>
 #include <vector>
+#include <limits>
 
 namespace arbiter {
 
@@ -58,20 +60,26 @@ struct BotAction {
 
 class MarketSim {
 public:
+    static constexpr u64 kFirstOrderId = 2'000'000'000;
     MarketSim(const SimConfig& cfg, u64 master_seed);
 
     // Pull model: the World schedules at min(next_provider_t, next_taker_t)
     // and asks for the action due then.
-    LogicalNs next_action_time() const { return std::min(next_provider_t_, next_taker_t_); }
+    LogicalNs next_action_time() const {
+        const LogicalNs arrival = std::min(next_provider_t_, next_taker_t_);
+        if (arrival == std::numeric_limits<LogicalNs>::max() && regime_ == 1 &&
+            cfg_.volatile_rate_multiplier == 0.0 &&
+            (cfg_.provider_arrival_per_ms > 0.0 || cfg_.taker_arrival_per_ms > 0.0))
+            return regime_until_;
+        return arrival;
+    }
     void advance(LogicalNs t) { now_ = t; }
     BotAction next_action();
 
     // The World feeds the observable book state so providers can join the touch.
     // `touch_shadowed`: when true the touch is computed EXCLUDING strategy
-    // orders (interference control, see docs/COUNTERFACTUALS.md): bot
-    // behavior becomes independent of the strategies' presence/quotes, so
-    // a counterfactual that changes only strategy behavior faces a frozen
-    // exogenous flow process (SUTVA holds by construction in that mode).
+    // orders (see docs/COUNTERFACTUALS.md). Matching and trade feedback
+    // still influence the remaining book and the bot process.
     void observe(Price best_bid, Price best_ask) {
         if (best_bid) last_bb_ = best_bid;
         if (best_ask) last_ba_ = best_ask;
@@ -118,7 +126,7 @@ private:
     int regime_ = 0;  // 0 calm, 1 volatile
     LogicalNs regime_until_ = 0;
     u64 actions_ = 0;
-    u64 next_bot_id_ = 2'000'000'000;
+    u64 next_bot_id_ = kFirstOrderId;
     i64 bias_ = 0;
     i64 last_trade_px_ = 0;
     Price last_bb_ = 0, last_ba_ = 0;

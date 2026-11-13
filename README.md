@@ -75,8 +75,8 @@ identify the exact causal event. State hashes are noncryptographic fingerprints.
 The retained study varies placement of an 8us budget across observation,
 decision and order transit, with nine allocations and eight paired seeds.
 Poisson and shadow-observation controls remain under experiments/FLAGSHIP-*.
-The clustered/reactive primary contrast is about -5.8 ticks/lot with Holm-adjusted
-p=.35: material under its threshold, statistically inconclusive. Eight seeds use
+The clustered/reactive primary contrast is about -4.0 ticks/lot with Holm-adjusted
+p=.14: material under its threshold, statistically inconclusive. Eight seeds use
 256 exact sign assignments. The 5,000-repetition parameter applies to the larger
 Monte Carlo path. Reported intervals are IID seed-level intervals; HAC utilities
 are available but their intervals are not serialized by this study.

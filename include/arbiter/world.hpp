@@ -198,7 +198,6 @@ private:
     void deliver_expected();
     void maybe_schedule_gap_request();
     void gap_recover();
-    LadderView book_ladder_without_own() const;
     // Best prices of the book EXCLUDING strategy orders (bots_observe_shadow
     // mode). O(level count), only used when the interference-control mode
     // is enabled.
@@ -302,7 +301,7 @@ private:
     void jappend(const Event& e);
     void schedule_seed_events();
     // record one completed order's stage deltas into the RunStats histograms
-    void note_stage_trace(u64 order_id, LogicalNs fill_t);
+    void note_stage_trace(u64 order_id, LogicalNs match_t, LogicalNs fill_t);
     void drop_stage_trace(u64 order_id);  // order ended without fill (reject/cancel)
 };
 

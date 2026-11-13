@@ -5,24 +5,24 @@ external runtime dependencies.
 
 ## Current test inventory
 
-The core contains 142 `AX_TEST` cases across 8 binaries:
+The core contains 169 `AX_TEST` cases across 8 binaries:
 
 | binary | cases |
 |---|---:|
-| `test_book` | 29 |
-| `test_core` | 9 |
-| `test_diff` | 7 |
-| `test_flagship` | 8 |
-| `test_journal` | 10 |
-| `test_stats` | 1 |
-| `test_world` | 56 |
-| `test_worldsnap` | 22 |
+| `test_book` | 32 |
+| `test_core` | 13 |
+| `test_diff` | 8 |
+| `test_flagship` | 14 |
+| `test_journal` | 14 |
+| `test_stats` | 2 |
+| `test_world` | 62 |
+| `test_worldsnap` | 24 |
 
-CTest also runs CLI, migrated-command, benchmark smoke and installed/relocated
-package checks: 22 entries in the default Release configuration. The package
-consumer check is omitted for sanitizer builds. LAB owns historical/grid tests
-and its integration checks. Recount with `rg -c "^AX_TEST\(" tests/*.cpp` and
-`ctest --test-dir build -N`; test counts are not correctness guarantees.
+CTest also runs CLI validation, migrated-command, benchmark smoke and
+installed/relocated package checks: 23 entries in the default Release
+configuration. The package consumer check is omitted for sanitizer builds.
+Recount with `rg -c "^AX_TEST\(" tests/*.cpp` and `ctest --test-dir build -N`;
+test counts are not correctness guarantees.
 
 ## Layers
 
@@ -70,8 +70,8 @@ monotone predicates (1000-op stream reduced to the 2 load-bearing ops).
 - Journal truncation at arbitrary byte offsets → `journal_recover` restores
   the last verifiable frame boundary → replay reproduces exactly the
   state at that event count (per-event hashes recorded during the run)
-- World-level: `arbiter demo recovery` truncates a live journal mid-flight
-  and recovers
+- CLI validation appends a corrupt journal tail, checks inspection and verification
+  failures, recovers the good prefix, and verifies it again
 
 ### 5. Fuzzing
 - Wire frames: bit flips, truncations, bad magic, random garbage, decoders
@@ -87,9 +87,9 @@ monotone predicates (1000-op stream reduced to the 2 load-bearing ops).
 
 ### 6. Sanitizers
 The full test suite runs clean under ASan+UBSan (`build-sanitize`). TSan is
-outside the current CMake sanitizer configuration. The only sanitizer finding
-during development (the empty-vector indexing in an early test) was fixed and
-is covered.
+outside the current CMake sanitizer configuration. Bounded-view parsing,
+empty byte ranges, malformed snapshot lengths, copied book indexes, and
+accounting boundaries have dedicated regression cases.
 
 ### 7. Invariants
 `check_book_invariants` (price ordering, total conservation, leaves/qty

@@ -13,8 +13,8 @@ This document lists the model's limits. Claims that contradict it are bugs.
   bound (`mm_ambiguous_fill_qty`); real fills authoritative. Inference is
   never used for accounting.
 - Bots bypass network/risk (documented asymmetry). In reactive mode they
-  observe the live touch INCLUDING strategy quotes; frozen mode isolates
-  the observation channel but NOT matching interference.
+  observe the live touch INCLUDING strategy quotes. Frozen observation filters
+  those quotes, while matching and trade feedback remain active.
 
 ## Flagship research program
 
@@ -35,9 +35,8 @@ This document lists the model's limits. Claims that contradict it are bugs.
 
 ## Execution / queue
 
-- No L3 queue truth from L2 data: fill reconstruction is a 3-model spread,
-  not a measurement. Do not claim "queue-aware" precision beyond the
-  documented assumptions.
+- Queue-position inference is an estimate with an ambiguity bound, not an
+  exact reconstruction. Do not claim precision beyond the documented model.
 - Market impact: size experiments vary assumed consumption; there is no
   production impact model. Labeled as such.
 - Fees are flat per-lot; exchange fee schedules and rebates are not modeled.
@@ -45,17 +44,13 @@ This document lists the model's limits. Claims that contradict it are bugs.
 
 ## Data
 
-- No proprietary data bundled; public captures need license review.
-- L2 level-set reconstruction approximates; sequence gaps/session boundaries
-  must be preserved, never interpolated.
-- Synthetic streams are stylized controls with known injected alpha; they
-  validate the pipeline, not the market.
+- Core generates synthetic market flow; it bundles no proprietary data.
+- Historical ingestion and L2 execution models belong to ARBITER-X-LAB.
 
 ## Statistics
 
-- HAC/Newey-West intervals and non-overlapping subsamples mitigate, but do
-  not eliminate, dependence bias. Sharpe-like ratios are descriptive.
-- Walk-forward covers 4 folds; regime-shift coverage is partial.
+- HAC/Newey-West utilities are available. The retained flagship reports
+  IID seed-level intervals and does not serialize HAC intervals.
 - Seed-level replication is the unit of inference in the flagship;
   within-world event counts are never treated as independent samples.
 

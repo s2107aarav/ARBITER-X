@@ -16,7 +16,7 @@ ONE-DIMENSIONAL SLICE of the 3-stage allocation simplex: the md-share axis {0..1
 
 flow_model=clustered (post-trade intensity boost + trade-sign persistence, k=0.90; a minimal self-exciting mechanism with a bit-exact Poisson null — NOT a Hawkes process)
 
-**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs (measured: ~7x trade-count difference at k=0.9; the momentum archetype only participates when sign runs emerge, k>=~0.85). The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
+**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs. The clustered process can produce sign signals that activate the momentum strategy. The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
 
 ## Replication
 
@@ -24,7 +24,7 @@ Seed is the unit of replication (independent worlds; within-world events are nev
 
 ## Interference mode
 
-frozen (bots see a shadow touch excluding strategy orders; bot flow is exogenous to the strategies)
+frozen observation (bots see a shadow touch excluding strategy orders; matching and trade feedback remain)
 
 | cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
@@ -53,8 +53,8 @@ frozen (bots see a shadow touch excluding strategy orders; bot flow is exogenous
 | md0.000 → md1.000 | +2561.8 | [-953.7, +6077.2] | 0.2109 | 1.0000 | +0.07 | no | no |
 
 - primary contrast (md0.000 -> md1.000): mean paired MM PnL diff +2561.8 ticks*qty (per-lot +0.07), Holm p=1.0000, not significant
-- economic materiality (primary): not material (threshold 1.00 ticks*qty/fill)
-- MM filled lots across the slice: 38998.5 (all-observation) vs 38004.2 (all-action): placement changes fill mechanics
+- economic materiality (primary): not material (threshold 1.00 ticks*qty/lot)
+- MM filled lots across the slice: 38998.5 (md share 1) vs 38004.2 (md share 0): placement changes fill mechanics
 - taker (momentum) PnL across the slice: -59.6 -> -119.0 (moves)
 - taker primary-contrast paired PnL diff: -59.4 (se 52.8, perm p=0.2969) — not significant
 - H0 at the primary contrast: NOT REJECTED (placement effect small and not significant at this budget/regime — a valid negative result)

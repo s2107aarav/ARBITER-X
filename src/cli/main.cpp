@@ -18,6 +18,7 @@
 #include "arbiter/world_snapshot.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <cerrno>
 #include <cstdio>
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -37,6 +39,29 @@ using namespace arbiter;
 
 namespace {
 
+bool valid_options(int argc, char** argv, std::initializer_list<std::string_view> values,
+                   std::initializer_list<std::string_view> flags = {}) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (std::find(flags.begin(), flags.end(), arg) != flags.end()) continue;
+        if (std::find(values.begin(), values.end(), arg) == values.end()) {
+            std::fprintf(stderr, "unknown option: %s\n", argv[i]);
+            return false;
+        }
+        if (i + 1 >= argc || !*argv[i + 1] || std::string_view(argv[i + 1]).starts_with("--")) {
+            std::fprintf(stderr, "missing value for %s\n", argv[i]);
+            return false;
+        }
+        ++i;
+    }
+    return true;
+}
+
+void ensure_parent_directory(const std::string& path) {
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+}
+
 bool write_file(const std::string& path, const std::string& content) {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (!file) return false;
@@ -45,7 +70,7 @@ bool write_file(const std::string& path, const std::string& content) {
 }
 
 bool parse_u64_arg(const char* text, u64& value) {
-    if (!text || !*text || *text == '-') return false;
+    if (!text || *text < '0' || *text > '9') return false;
     errno = 0;
     char* end = nullptr;
     const unsigned long long parsed = std::strtoull(text, &end, 10);
@@ -101,6 +126,7 @@ bool millis_to_ns(u64 milliseconds, LogicalNs& nanoseconds) {
 }
 
 int cmd_simulate(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--seed", "--ms", "--out"})) return 2;
     u64 seed = 42;
     u64 horizon_ms = 100;
     const char* out = "artifacts/sim";
@@ -112,7 +138,6 @@ int cmd_simulate(int argc, char** argv) {
         }
         else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
     }
-    std::filesystem::create_directories("artifacts");
     WorldConfig cfg;
     cfg.journal_events = true;
     cfg.journal_path = std::string(out) + ".journal";
@@ -120,6 +145,7 @@ int cmd_simulate(int argc, char** argv) {
         std::fprintf(stderr, "--ms is too large\n");
         return 2;
     }
+    ensure_parent_directory(cfg.journal_path);
     World w(cfg, seed);
     RunStats s = w.run();
     std::printf("%s", runstats_summary(s, "simulate seed=" + std::to_string(seed)).c_str());
@@ -136,6 +162,7 @@ int cmd_simulate(int argc, char** argv) {
 }
 
 int cmd_verify(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--seed", "--ms"})) return 2;
     u64 seed = 42;
     u64 horizon_ms = 50;
     for (int i = 1; i < argc; ++i) {
@@ -166,6 +193,7 @@ int cmd_verify(int argc, char** argv) {
 }
 
 int cmd_replay(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--journal", "--until", "--book"})) return 2;
     const char* path = nullptr;
     u64 until = 0;
     const char* impl = "opt";
@@ -178,6 +206,10 @@ int cmd_replay(int argc, char** argv) {
     }
     if (!path) {
         std::printf("usage: arbiter replay --journal FILE [--until N] [--book opt|ref]\n");
+        return 2;
+    }
+    if (std::strcmp(impl, "ref") != 0 && std::strcmp(impl, "opt") != 0) {
+        std::fprintf(stderr, "--book must be ref or opt\n");
         return 2;
     }
     const ReplayResult r = replay_journal(
@@ -195,7 +227,7 @@ int cmd_replay(int argc, char** argv) {
 }
 
 int cmd_journal(int argc, char** argv) {
-    if (argc < 3) {
+    if (argc != 3) {
         std::printf("usage: arbiter journal <inspect|verify|recover> FILE\n");
         return 2;
     }
@@ -245,6 +277,10 @@ int cmd_journal(int argc, char** argv) {
             ++n;
         }
         std::printf("total: %llu events\n", (unsigned long long)n);
+        if (rd.value.failed()) {
+            std::fprintf(stderr, "journal read failed: %s\n", to_cstr(rd.value.error().code));
+            return 1;
+        }
         return 0;
     }
     std::printf("unknown subcommand: %s\n", sub.c_str());
@@ -252,6 +288,7 @@ int cmd_journal(int argc, char** argv) {
 }
 
 int cmd_worldcheck(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--seed", "--events", "--out"})) return 2;
     u64 seed = 42, events = 20000;
     const char* out = "artifacts/world_checkpoint.wsnap";
     for (int i = 1; i < argc; ++i) {
@@ -262,10 +299,8 @@ int cmd_worldcheck(int argc, char** argv) {
         }
         else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
     }
-    std::filesystem::create_directories("artifacts");
-    // NOTE: the standard checkpoint config (below) is the one worldjump /
-    // worldfork restore with; keep them in sync or restores will (correctly)
-    // reject on config-hash mismatch.
+    ensure_parent_directory(out);
+    // Continuation commands restore the configuration persisted in this snapshot.
     WorldConfig cfg;
     cfg.journal_events = false;
     cfg.horizon_ns = 200'000'000;
@@ -290,6 +325,7 @@ int cmd_worldcheck(int argc, char** argv) {
 }
 
 int cmd_worldjump(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--snap", "--events", "--seed"})) return 2;
     const char* path = nullptr;
     u64 events = 0;  // 0 = run to the configured horizon
     u64 seed = 0;    // 0 = use the seed recorded in the snapshot
@@ -344,6 +380,7 @@ int cmd_worldjump(int argc, char** argv) {
 }
 
 int cmd_worldfork(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--snap", "--variable", "--events", "--seed"})) return 2;
     const char* path = nullptr;
     const char* variable = "half_spread=4";
     u64 events = 0;
@@ -464,8 +501,8 @@ int cmd_worldfork(int argc, char** argv) {
     bi.fork_event = snap.value.events;  // the branch POINT (fork happens here)
     bi.config_hash = cfg.hash();
     bi.initial_state_hash = snap.value.state_hash;
-    const i64 pnl_a = a.stats().mm_cash + a.stats().mm_inventory * a.stats().final_mid;
-    const i64 pnl_b = sb.mm_cash + sb.mm_inventory * sb.final_mid;
+    const i64 pnl_a = saturating_add_i64(a.stats().mm_cash, saturating_mul_i64(a.stats().mm_inventory, a.stats().final_mid));
+    const i64 pnl_b = saturating_add_i64(sb.mm_cash, saturating_mul_i64(sb.mm_inventory, sb.final_mid));
     std::printf("fork at event %llu (variable %s=%s):\n", (unsigned long long)snap.value.events,
                 key.c_str(), val.c_str());
     std::printf("  parent continuation : hash %llu (pnl %lld, fills %llu)\n",
@@ -489,6 +526,7 @@ int cmd_worldfork(int argc, char** argv) {
 }
 
 int cmd_simstats(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--seed", "--ms", "--self-excitation"})) return 2;
     u64 horizon_ms = 500;
     u64 seed = 99;
     double self_excitation = 0.0;  // default: the Poisson-null regime
@@ -541,6 +579,8 @@ int cmd_simstats(int argc, char** argv) {
         auto ev = rd.value.next();
         if (!ev) break;
         const Event& e = ev.value;
+        if (e.type != EvType::MdNew && e.type != EvType::MdCancel && e.type != EvType::MdTrade)
+            continue;
         if (e.type == EvType::MdNew) {
             scratch.clear();
             // duplicate MdNew ids are legal in the journal (gap-recovery
@@ -589,6 +629,10 @@ int cmd_simstats(int argc, char** argv) {
         const Price bb = book.best_bid(), ba = book.best_ask();
         if (bb && ba) spread.record(static_cast<double>(ba - bb));
     }
+    if (rd.value.failed()) {
+        std::fprintf(stderr, "journal read failed: %s\n", to_cstr(rd.value.error().code));
+        return 1;
+    }
     const auto sp = spread.summarize();
     const auto rs = rets.summarize();
     // lag-1 autocorrelation of trade-time mids (volatility clustering probe)
@@ -616,7 +660,7 @@ int cmd_simstats(int argc, char** argv) {
     std::printf("  trades: %llu (%.0f per logical second)\n", (unsigned long long)trades,
                 static_cast<double>(trades) / (static_cast<double>(horizon_ms) / 1000.0));
     std::printf("  trade-to-trade returns (bp): p1=%.2f p50=%.2f p99=%.2f max=%.2f (n=%llu)\n",
-                rs.p50, rs.p50, rs.p99, rs.mx, (unsigned long long)rs.count);
+                rets.percentile(0.01), rs.p50, rs.p99, rs.mx, (unsigned long long)rs.count);
     std::printf("  mid lag-1 autocorrelation at trade times: %.4f\n", autoc);
     // clustering diagnostics (the flagship mechanism variables):
     // sign persistence P(next change = same direction) and inter-arrival
@@ -655,6 +699,39 @@ int cmd_simstats(int argc, char** argv) {
 namespace {
 
 FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& name) {
+    for (const auto& [key, raw] : cfg.entries()) {
+        bool valid = true;
+        if (key == "latency.total_ns" || key == "experiment.horizon_ns" || key == "experiment.warmup_ns") {
+            i64 value = 0;
+            valid = parse_i64_arg(raw.c_str(), value);
+        } else if (key == "stats.permutation_reps") {
+            u64 value = 0;
+            valid = parse_u64_arg(raw.c_str(), value);
+        } else if (key == "market.taker_self_excitation" || key == "stats.economic_threshold_per_lot") {
+            double value = 0;
+            valid = parse_double_arg(raw.c_str(), value);
+        } else if (key == "market.bots_observe_shadow") {
+            valid = raw == "true" || raw == "false" || raw == "1" || raw == "0" ||
+                    raw == "yes" || raw == "no" || raw == "on" || raw == "off";
+        } else if (key == "market.flow_model") {
+            valid = raw == "poisson" || raw == "clustered";
+        } else if (key != "experiment.name" && key != "experiment.seeds" && key != "latency.md_shares") {
+            throw std::invalid_argument("unknown flagship configuration key: " + key);
+        }
+        if (!valid) throw std::invalid_argument("invalid flagship configuration: " + key + "=" + raw);
+    }
+    const auto parse_list = [](std::string_view raw, const auto& consume) {
+        while (true) {
+            const size_t comma = raw.find(',');
+            std::string_view token = raw.substr(0, comma);
+            while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.remove_prefix(1);
+            while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.remove_suffix(1);
+            if (token.empty()) throw std::invalid_argument("empty flagship list item");
+            consume(std::string(token));
+            if (comma == std::string_view::npos) break;
+            raw.remove_prefix(comma + 1);
+        }
+    };
     FlagshipConfig fc;
     fc.name = cfg.has("experiment.name") ? cfg.get_str("experiment.name", name) : name;
     fc.total_latency_ns = cfg.get_i64("latency.total_ns", 8000);
@@ -671,42 +748,25 @@ FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& n
     // seeds: comma-separated in [experiment]
     fc.seeds.clear();
     const std::string seed_str = cfg.get_str("experiment.seeds", "2026,2027,2028,2029,2030,2031,2032,2033");
-    for (size_t p = 0; p < seed_str.size();) {
-        const size_t c = seed_str.find(',', p);
-        const std::string tok = seed_str.substr(p, c == std::string::npos ? std::string::npos : c - p);
-        if (!tok.empty()) {
-            u64 seed = 0;
-            if (!parse_u64_arg(tok.c_str(), seed)) {
-                std::fprintf(stderr, "invalid flagship definition: seed '%s'\n", tok.c_str());
-                std::exit(2);
-            }
-            fc.seeds.push_back(seed);
-        }
-        if (c == std::string::npos) break;
-        p = c + 1;
-    }
+    parse_list(seed_str, [&](const std::string& tok) {
+        u64 seed = 0;
+        if (!parse_u64_arg(tok.c_str(), seed))
+            throw std::invalid_argument("invalid flagship seed: " + tok);
+        fc.seeds.push_back(seed);
+    });
     // md shares: comma-separated fractions in [latency]
     const std::string share_str = cfg.get_str("latency.md_shares",
                                              "0,0.125,0.25,0.375,0.5,0.625,0.75,0.875,1");
     fc.md_shares.clear();
-    for (size_t p = 0; p < share_str.size();) {
-        const size_t c = share_str.find(',', p);
-        const std::string tok = share_str.substr(p, c == std::string::npos ? std::string::npos : c - p);
-        if (!tok.empty()) {
-            double share = 0.0;
-            if (!parse_double_arg(tok.c_str(), share)) {
-                std::fprintf(stderr, "invalid flagship definition: md_share '%s'\n", tok.c_str());
-                std::exit(2);
-            }
-            fc.md_shares.push_back(share);
-        }
-        if (c == std::string::npos) break;
-        p = c + 1;
-    }
+    parse_list(share_str, [&](const std::string& tok) {
+        double share = 0.0;
+        if (!parse_double_arg(tok.c_str(), share))
+            throw std::invalid_argument("invalid flagship md share: " + tok);
+        fc.md_shares.push_back(share);
+    });
     for (double x : fc.md_shares)
         if (!(x >= 0.0 && x <= 1.0)) {
-            std::printf("invalid flagship definition: md_share %.17g outside [0,1]\n", x);
-            std::exit(2);  // loud: malformed definition must never fall back to defaults
+            throw std::invalid_argument("flagship md share outside [0,1]");
         }
     return fc;
 }
@@ -714,6 +774,8 @@ FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& n
 }  // namespace
 
 int cmd_flagship(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--config", "--reproduce", "--out", "--seed", "--seeds", "--total-ns", "--flow"},
+                       {"--frozen", "--shadow"})) return 2;
     const char* config_file = nullptr;
     const char* reproduce = nullptr;
     const char* out_dir = nullptr;
@@ -735,6 +797,18 @@ int cmd_flagship(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--flow") && i + 1 < argc) flow = argv[++i];
         else if (!std::strcmp(argv[i], "--frozen") || !std::strcmp(argv[i], "--shadow")) shadow = true;
     }
+    if (config_file || reproduce) {
+        for (int i = 1; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--reproduce" || (!reproduce && (option == "--config" || option == "--out"))) {
+                ++i;
+                continue;
+            }
+            std::fprintf(stderr, "option %s cannot be combined with %s\n", argv[i],
+                         reproduce ? "--reproduce" : "--config");
+            return 2;
+        }
+    }
     if (reproduce) {
         const FlagshipReproReport rep = flagship_reproduce(reproduce);
         std::printf("flagship reproduce %s\n  cells: %llu  seeds: %llu  mismatches: %llu\n",
@@ -755,17 +829,23 @@ int cmd_flagship(int argc, char** argv) {
         const std::string stem = std::filesystem::path(config_file).stem().string();
         fc = flagship_config_from_file(cfg.value, stem);
     } else {
+        if (std::strcmp(flow, "poisson") != 0 && std::strcmp(flow, "clustered") != 0) {
+            std::fprintf(stderr, "--flow must be poisson or clustered\n");
+            return 2;
+        }
+        if (nseeds > fc.seeds.max_size() ||
+            (nseeds > 0 && seed0 > std::numeric_limits<u64>::max() - (nseeds - 1))) {
+            std::fprintf(stderr, "--seed and --seeds overflow the seed range\n");
+            return 2;
+        }
         fc.total_latency_ns = total_ns;
         fc.flow_model = std::strcmp(flow, "poisson") == 0 ? FlowModel::Poisson : FlowModel::Clustered;
         fc.bots_observe_shadow = shadow;
         fc.seeds.clear();
+        fc.seeds.reserve(static_cast<size_t>(nseeds));
         for (u64 k = 0; k < nseeds; ++k) fc.seeds.push_back(seed0 + k);
         // never an empty grid
         if (fc.md_shares.empty()) fc.md_shares = {0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0};
-    }
-    if (!config_file && nseeds > 0 && seed0 > std::numeric_limits<u64>::max() - (nseeds - 1)) {
-        std::fprintf(stderr, "--seed and --seeds overflow the seed range\n");
-        return 2;
     }
     if (fc.seeds.empty() || fc.md_shares.empty() || fc.total_latency_ns < 0) {
         std::printf("invalid flagship definition (need seeds, md_shares, total >= 0)\n");
@@ -799,6 +879,7 @@ int cmd_flagship(int argc, char** argv) {
 }
 
 int cmd_fuzz(int argc, char** argv) {
+    if (!valid_options(argc, argv, {"--iters", "--target"})) return 2;
     u64 iters = 200000;
     const char* which = "protocol";
     for (int i = 1; i < argc; ++i) {
@@ -846,6 +927,10 @@ int cmd_fuzz(int argc, char** argv) {
         return divergences == 0 ? 0 : 1;
     }
     if (!std::strcmp(which, "adversarial")) {
+        if (iters > std::numeric_limits<u32>::max()) {
+            std::fprintf(stderr, "--iters exceeds the adversarial iteration range\n");
+            return 2;
+        }
         // hill-climb the op-generator parameter space chasing divergences;
         // any find is minimized and persisted to the corpus (regression
         // corpus, replayed by `fuzz --target corpus` and test_diff)

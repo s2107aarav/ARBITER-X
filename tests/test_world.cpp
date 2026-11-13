@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <filesystem>
 #include <string>
 #include <stdexcept>
@@ -663,6 +664,15 @@ AX_TEST(experiment_overrides_parse_strictly) {
     CHECK(!apply_world_override(cfg, "md_channel.loss_rate", "1.1", err));
     CHECK(!apply_world_override(cfg, "risk.max_order_qty", "-1", err));
     CHECK(!apply_world_override(cfg, "risk.enabled", "maybe", err));
+    CHECK(!apply_world_override(cfg, "sim.volatile_qty_multiplier", " -1", err));
+    CHECK(!apply_world_override(cfg, "fee_per_lot", std::string("1\0junk", 6), err));
+    for (const char* key : {"md_channel.reorder_window", "order_channel.reorder_window",
+                            "exec_channel.reorder_window", "md_channel.burst_loss_len",
+                            "order_channel.burst_loss_len", "exec_channel.burst_loss_len"}) {
+        const u64 before = cfg.hash();
+        CHECK(!apply_world_override(cfg, key, "4294967296", err));
+        CHECK_EQ(cfg.hash(), before);
+    }
 }
 
 AX_TEST(world_md_gap_recovery_converges) {
@@ -1076,6 +1086,128 @@ AX_TEST(stage_trace_sums_exact_with_partial_fills) {
     CHECK_EQ(fl.count, s.stage_traced_fills);
 }
 
+AX_TEST(delayed_partial_reports_keep_all_fill_traces) {
+    WorldConfig cfg = test_world_config();
+    cfg.horizon_ns = 20'000'000;
+    cfg.exec_channel.base_delay_ns = 500'000;
+    cfg.exec_channel.jitter_ns = 0;
+    cfg.sim.taker_self_excitation = 0.9;
+    World world(cfg, 2026);
+    const auto stats = world.run();
+    const auto snapshot = world.capture_snapshot();
+    u64 delivered_legs = 0;
+    for (const auto& notify : snapshot.notifies) {
+        if (notify.kind != 0 || !notify.delivered) continue;
+        for (u32 account : {notify.fill.taker_acct, notify.fill.maker_acct})
+            if (account == cfg.mm.account || account == cfg.momentum.account) ++delivered_legs;
+    }
+    CHECK(delivered_legs > 0);
+    CHECK_EQ(stats.fill_latency.count(), delivered_legs);
+    CHECK_EQ(stats.stage_traced_fills, delivered_legs);
+    CHECK_EQ(stats.stage_sum_match_to_fill,
+             delivered_legs * static_cast<u64>(cfg.publish_latency_ns + cfg.exec_channel.base_delay_ns));
+}
+
+AX_TEST(self_trades_account_for_both_delivered_legs_and_fees) {
+    WorldConfig cfg = test_world_config();
+    cfg.horizon_ns = 20'000'000;
+    cfg.cancel_latency_ns = 500'000;
+    cfg.mm.half_spread_ticks = 0;
+    cfg.mm.skew_denominator = 10;
+    cfg.exec_channel.jitter_ns = 0;
+    cfg.fee_per_lot = 3;
+    World world(cfg, 1);
+    const auto stats = world.run();
+    i64 expected_inventory = 0, expected_cash = 0;
+    u64 expected_qty = 0, self_trades = 0;
+    for (const auto& notify : world.capture_snapshot().notifies) {
+        if (notify.kind != 0 || !notify.delivered) continue;
+        const auto& fill = notify.fill;
+        if (fill.taker_acct == cfg.mm.account && fill.maker_acct == cfg.mm.account) ++self_trades;
+        const auto apply = [&](u32 account, u8 side) {
+            if (account != cfg.mm.account) return;
+            const i64 quantity = signed_qty_i64(static_cast<Side>(side), fill.qty);
+            expected_inventory += quantity;
+            expected_cash -= quantity * fill.price + cfg.fee_per_lot * static_cast<i64>(fill.qty);
+            expected_qty += fill.qty;
+        };
+        apply(fill.taker_acct, fill.taker_side);
+        apply(fill.maker_acct, fill.maker_side);
+    }
+    CHECK(self_trades > 0);
+    CHECK_EQ(stats.mm_inventory, expected_inventory);
+    CHECK_EQ(stats.mm_cash, expected_cash);
+    CHECK_EQ(stats.mm_real_filled_qty, expected_qty);
+}
+
+AX_TEST(zero_arrival_rates_do_not_generate_phantom_orders) {
+    WorldConfig cfg = test_world_config();
+    cfg.sim.provider_arrival_per_ms = 0;
+    cfg.sim.taker_arrival_per_ms = 0;
+    cfg.horizon_ns = 2'000'000'000'000;
+    cfg.mm.requote_interval_ns = cfg.horizon_ns * 2;
+    cfg.momentum.cooldown_ns = cfg.horizon_ns * 2;
+    World world(cfg, 42);
+    const auto stats = world.run();
+    CHECK_EQ(stats.events_processed, 0u);
+    CHECK_EQ(stats.trades, 0u);
+    CHECK_EQ(world.capture_snapshot().sim.actions, 0u);
+}
+
+AX_TEST(zero_rate_regime_can_resume_market_flow) {
+    SimConfig cfg;
+    cfg.volatile_rate_multiplier = 0;
+    cfg.regime_dwell_ns = 10'000;
+    MarketSim sim(cfg, 42);
+    bool paused = false, resumed = false;
+    for (int i = 0; i < 200; ++i) {
+        const auto time = sim.next_action_time();
+        CHECK(time < 1'000'000'000);
+        sim.advance(time);
+        const auto action = sim.next_action();
+        if (sim.regime() == 1) paused = true;
+        if (paused && action.kind != BotAction::Kind::None && sim.regime() == 0) resumed = true;
+    }
+    CHECK(paused);
+    CHECK(resumed);
+}
+
+AX_TEST(risk_signed_extremes_saturate_without_losing_valid_offsets) {
+    RiskEngine risk(RiskConfig{});
+    risk.note_fill(10, 7);
+    risk.note_fill(std::numeric_limits<i64>::min(), 7);
+    CHECK_EQ(risk.state_of(7).position, std::numeric_limits<i64>::min() + 10);
+    risk.reserve(1, 7, std::numeric_limits<i64>::min());
+    risk.reduce_reservation(1, u64{1} << 63);
+    CHECK(!risk.has_reservation(1));
+    RiskState a, b;
+    a.position = 10; b.position = std::numeric_limits<i64>::min();
+    risk.restore_state(7, a); risk.restore_state(8, b);
+    CHECK_EQ(risk.state().position, std::numeric_limits<i64>::min() + 10);
+}
+
+AX_TEST(mm_snapshot_recovery_preserves_own_fifo_and_updates_fair) {
+    MarketMakerStrategy mm(StrategyConfig{});
+    mm.on_md_new(10, Side::Buy, 1499, 20);
+    mm.on_md_new(11, Side::Sell, 1501, 20);
+    const auto actions = mm.on_timer();
+    CHECK_EQ(actions.size(), 2u);
+    if (actions.size() != 2) return;
+    const u64 bid = actions[0].ord.id;
+    const u64 ask = actions[1].ord.id;
+    LadderView ladder;
+    ladder.bids = {{1499, 55, {{10, 10, 20}, {bid, 25, 25}, {12, 20, 20}}}};
+    ladder.asks = {{1501, 45, {{ask, 25, 25}, {11, 20, 20}}}};
+    mm.rebuild_view(ladder);
+    CHECK_EQ(mm.resting_count(), 2u);
+    for (const auto& own : mm.own_snapshot()) {
+        CHECK(own.confirmed);
+        CHECK_EQ(own.ahead, own.id == bid ? 10u : 0u);
+    }
+    mm.on_md_trade(1499, 15);
+    CHECK_EQ(mm.inference_fills(), 5u);
+}
+
 AX_TEST(flow_poisson_null_is_bit_identical_to_historical_default) {
     // k=0 (explicit) must equal the historical process exactly: same state
     // hash as a config where the knob is simply never introduced.
@@ -1231,6 +1363,13 @@ AX_TEST(world_config_validation_rejects_degenerate_configs) {
     { WorldConfig c; c.sim.cancel_fraction = -0.1; expect_invalid(c); }
     { WorldConfig c; c.mm.skew_denominator = 0; expect_invalid(c); }
     { WorldConfig c; c.momentum.id_base = 0; expect_invalid(c); }
+    { WorldConfig c; c.momentum.id_base = 1; expect_invalid(c); }
+    { WorldConfig c; c.momentum.id_base = MarketSim::kFirstOrderId; expect_invalid(c); }
+    { WorldConfig c; c.momentum.id_base = MarketSim::kFirstOrderId - 1; expect_invalid(c); }
+    { WorldConfig c; c.momentum.id_base = DomainBounds::kMaxOrderId + 1; expect_invalid(c); }
+    { WorldConfig c; c.max_events = std::numeric_limits<u64>::max(); expect_invalid(c); }
+    { WorldConfig c; c.mm.enabled = false; c.momentum.id_base = 1; CHECK(c.validate().empty()); }
+    { WorldConfig c; c.max_events = 0; c.momentum.id_base = 1; CHECK(c.validate().empty()); }
     { WorldConfig c; c.risk.max_position = -1; expect_invalid(c); }
     { WorldConfig c; c.horizon_ns = 0; expect_invalid(c); }
     // the documented cancel-latency sentinel stays exactly valid

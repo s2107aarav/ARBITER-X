@@ -148,4 +148,16 @@ AX_TEST(corpus_replays_clean) {
     CHECK_EQ(diverged, 0u);
 }
 
+AX_TEST(corpus_parser_rejects_trailing_junk_and_numeric_overflow) {
+    const auto valid = diff::ops_from_text("A 1 1 0 0 0 1000 5 0");
+    CHECK(valid);
+    if (valid) CHECK_EQ(valid.value.size(), 1u);
+    for (const char* text : {"A 1 1 0 0 0 1000 5 0 junk\n", "A 1 1 0 0 0 1000 5\n",
+                             "A -1 1 0 0 0 1000 5 0\n",
+                             "A 18446744073709551616 1 0 0 0 1000 5 0\n",
+                             "A 1 4294967296 0 0 0 1000 5 0\n"})
+        CHECK(!diff::ops_from_text(text));
+    CHECK_EQ(diff::run_corpus("artifacts/missing-corpus-directory").second, 1u);
+}
+
 AX_TEST_MAIN

@@ -11,7 +11,7 @@
 //
 //   md_transit_ns + decision_ns + order_transit_ns == total_ns
 //
-// enforced at construction; illegal allocations cannot be built.
+// checked by validate_allocation() before an allocation is used.
 //
 // SEMANTIC DEFINITIONS (each maps to exactly one engine stage; see
 // docs/EXECUTION_MODEL.md "Stage semantics"):
@@ -61,7 +61,9 @@ struct LatencyAllocation {
     i64 order_transit_ns = 0;
 
     // Total budget L (the invariant; exact, integer ns).
-    i64 total_ns() const noexcept { return md_transit_ns + decision_ns + order_transit_ns; }
+    i64 total_ns() const noexcept {
+        return saturating_add_i64(saturating_add_i64(md_transit_ns, decision_ns), order_transit_ns);
+    }
 
     // Canonical serialization: "md+k,dec+k,ord+k", deterministic, human
     // readable, round-trips exactly.

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,105 @@ AX_TEST(allocation_apply_zeroes_jitter_and_sets_stages) {
     CHECK(out.hash() != cfg.hash());  // config identity moved
 }
 
+AX_TEST(allocation_parser_respects_view_bounds_and_integer_range) {
+    const char raw[] = {'m','d','+','1',',','d','e','c','+','2',',','o','r','d','+','3'};
+    const auto parsed = LatencyAllocation::from_string(std::string_view(raw, sizeof raw));
+    CHECK(parsed);
+    if (parsed) CHECK_EQ(parsed.value.total_ns(), 6);
+    CHECK(!LatencyAllocation::from_string("md+9223372036854775808,dec+0,ord+0"));
+    CHECK(!LatencyAllocation::from_string("md+1,dec+"));
+    CHECK(!LatencyAllocation::from_string("md+ 1,dec+2,ord+3"));
+    CHECK(!LatencyAllocation::from_string("md++1,dec+2,ord+3"));
+    const std::string extra = "md+1,dec+2,ord+39";
+    const auto view = LatencyAllocation::from_string(std::string_view(extra.data(), extra.size() - 1));
+    CHECK(view);
+    if (view) CHECK_EQ(view.value.order_transit_ns, 3);
+}
+
+AX_TEST(flagship_rejects_invalid_grids_before_running) {
+    auto rejected = [](const FlagshipConfig& cfg) {
+        bool caught = false;
+        try { (void)run_flagship(cfg); }
+        catch (const std::invalid_argument&) { caught = true; }
+        CHECK(caught);
+    };
+    FlagshipConfig cfg;
+    cfg.md_shares.clear();
+    rejected(cfg);
+    cfg.md_shares = {0.5};
+    rejected(cfg);
+    cfg.md_shares = {0.0, 1.0};
+    cfg.seeds.clear();
+    rejected(cfg);
+    cfg.seeds = {1, 1};
+    rejected(cfg);
+    cfg.seeds = {1};
+    cfg.economic_threshold_ticks_qty_per_lot = std::numeric_limits<double>::quiet_NaN();
+    rejected(cfg);
+}
+
+AX_TEST(flagship_names_roundtrip_json_escapes) {
+    FlagshipConfig cfg;
+    cfg.name = "quoted\"name\\path\n";
+    cfg.horizon_ns = 1;
+    cfg.md_shares = {0.0, 1.0};
+    cfg.seeds = {1};
+    const auto result = run_flagship(cfg);
+    CHECK_EQ(result.pairs.size(), 1u);
+    const std::string dir = "artifacts/escaped_flagship";
+    CHECK(write_flagship_artifacts(dir, result));
+    CHECK(flagship_reproduce(dir + "/results.json").ok);
+    cfg.md_shares = {0.0, 0.0001, 0.0002, 1.0};
+    const auto fine_grid = run_flagship(cfg);
+    CHECK_NE(fine_grid.cells[0].name, fine_grid.cells[1].name);
+    CHECK_NE(fine_grid.cells[1].name, fine_grid.cells[2].name);
+}
+
+AX_TEST(flagship_separates_statistical_and_economic_verdicts) {
+    FlagshipConfig cfg;
+    cfg.md_shares = {0.0, 1.0};
+    cfg.seeds = {2026, 2027, 2028, 2029, 2030, 2031};
+    cfg.economic_threshold_ticks_qty_per_lot = 1e9;
+    const auto result = run_flagship(cfg);
+    CHECK_EQ(result.pairs.size(), 1u);
+    if (result.pairs.empty() || result.findings.empty()) return;
+    const auto& primary = result.pairs.back();
+    CHECK(primary.statistically_significant);
+    CHECK(!primary.economically_material);
+    CHECK_EQ(primary.p_permutation, 0.03125);
+    const auto& verdict = result.findings.back();
+    CHECK(verdict.find("REJECTED after Holm") != std::string::npos);
+    CHECK(verdict.find("below the predefined economic threshold") != std::string::npos);
+    CHECK(verdict.find("not significant") == std::string::npos);
+}
+
+AX_TEST(flagship_reproduction_checks_all_reported_outcomes) {
+    FlagshipConfig cfg;
+    cfg.horizon_ns = 1;
+    cfg.md_shares = {0.0, 1.0};
+    cfg.seeds = {1};
+    const auto result = run_flagship(cfg);
+    const std::string original = flagship_to_json(result);
+    const std::string dir = "artifacts/tampered_outcomes";
+    std::filesystem::create_directories(dir);
+    for (const char* field : {"mm_filled_qty", "mm_markout", "mean_mm_pnl_diff", "p_perm"}) {
+        std::string tampered = original;
+        const std::string key = std::string("\"") + field + "\": ";
+        const auto start = tampered.find(key);
+        CHECK_NE(start, std::string::npos); if (start == std::string::npos) return;
+        const auto value = start + key.size();
+        const auto end = tampered.find_first_of(",}\n", value);
+        tampered.replace(value, end - value, "123");
+        FILE* file = std::fopen((dir + "/results.json").c_str(), "wb");
+        CHECK(file); if (!file) return;
+        CHECK_EQ(std::fwrite(tampered.data(), 1, tampered.size(), file), tampered.size());
+        CHECK_EQ(std::fclose(file), 0);
+        const auto report = flagship_reproduce(dir + "/results.json");
+        CHECK(!report.ok);
+        CHECK(report.mismatches > 0);
+    }
+}
+
 AX_TEST(fill_count_difference_is_signed_without_underflow) {
     CHECK_EQ(signed_fill_count_difference(7, 10), -3.0);
     CHECK_EQ(signed_fill_count_difference(10, 7), 3.0);
@@ -136,27 +236,6 @@ AX_TEST(stage_placement_is_realized_in_engine_timestamps) {
     // and they differ across allocations
     CHECK_NE(dec_a.first, dec_b.first);
 }
-
-// ---------------- tracing on/off: economic + state equivalence ----------------
-
-
-// ---------------- stage-trace exact sums (incl. partial fills) ----------------
-
-
-// ---------------- flow regimes: Poisson null vs clustered ----------------
-
-
-
-// ---------------- snapshot/fork under the new state ----------------
-
-
-
-
-// ---------------- shadow (frozen) interference mode ----------------
-
-
-// ---------------- queue-model ambiguity accounting ----------------
-
 
 // ---------------- flagship determinism + artifact discipline ----------------
 
@@ -239,10 +318,6 @@ AX_TEST(flagship_rejects_malformed_artifacts) {
     CHECK(r.detail.find("definition_hash mismatch") != std::string::npos ||
           r.detail.find("no cells") != std::string::npos);
 }
-
-// ---------------- §27: message-type latency granularity ----------------
-
-
 
 AX_TEST(flagship_rejects_incomplete_seed_records) {
     const std::string source=std::string(AX_SOURCE_DIR)+"/experiments/FLAGSHIP-clustered-reactive/results.json";

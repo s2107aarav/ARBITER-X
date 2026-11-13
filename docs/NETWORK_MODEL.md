@@ -59,9 +59,9 @@ Every MD frame carries a transport sequence (`md_seq`). The feed handler:
 4. GapRequest → exchange retransmits each missing seq as a NEW packet attempt
    from its ring buffer (4096 messages), arriving at base delay later —
    recovery latency is real, not bypassed
-5. gap start older than the ring → **snapshot recovery**: the exchange sends
-   the canonical ladder (minus the strategy's own orders), the view is
-   rebuilt, and the stream resynchronizes
+5. gap start older than the ring → **snapshot recovery**: the exchange supplies
+   the canonical ladder; the strategy reconciles its own orders and rebuilds
+   its view of other orders, then the stream resynchronizes
 
 A frame enters the strategy receive buffer only after its scheduled delivery
 event fires AND its CRC validates. A CRC-rejected frame is counted, journals
@@ -69,8 +69,9 @@ a Fault, and triggers the gap path like a loss. Order and execution
 duplicates are receiver-deduplicated (see above); loss/corruption on those
 two channels is counted but not recovered in v1.
 
-Convergence is TESTED: with 2% MD loss + heavy jitter, every dropped message
-is recovered and delivered exactly once
+Convergence is tested with 2% MD loss and heavy jitter: most losses recover,
+and each sequence is applied at most once; packets beyond the run horizon
+can remain pending
 (`tests/test_world.cpp: world_md_gap_recovery_converges`), and the full
 transport state round-trips exactly through snapshot/restore under
 duplicates, loss, reordering, corruption and mid-flight recovery
@@ -93,11 +94,11 @@ Counter contract — the SAME rules on all three channels (test-locked in
 | `md_reordered` | reorder decisions (MD only, decision side) |
 | `md_gap_events` / `md_recovered` / `md_snapshot_recoveries` | gap detection / retransmit packets scheduled / snapshot recovery |
 
-With `dup_rate = 1` on a channel, every frame arrives twice and the second
-attempt is suppressed: `order_frames_duplicated == strategy_orders_sent +
-strategy_cancels_sent` exactly, and `md_duplicated <= md_published` with the
-difference bounded by the horizon tail. A corrupted frame that is ALSO
-duplicated yields two corruption rejections (per attempt) for one encode.
+With `dup_rate = 1` and no loss or corruption, each frame has two delivery
+attempts. The second accepted sequence is suppressed when both attempts fall
+within the run horizon. Recovery races can add further MD duplicate attempts.
+A corrupted frame that is also duplicated yields two corruption rejections
+when both attempts arrive, for one encode.
 
 `md_delivered <= md_published` holds at all times (a message is delivered at
 most once).

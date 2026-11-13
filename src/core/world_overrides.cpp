@@ -104,16 +104,16 @@ bool apply_key(WorldConfig& c, const std::string& k, const std::string& raw, std
         errno = 0;
         char* end = nullptr;
         const long long x = std::strtoll(raw.c_str(), &end, 10);
-        if (errno == ERANGE || end == raw.c_str() || *end != '\0') return false;
+        if (errno == ERANGE || end == raw.c_str() || end != raw.data() + raw.size()) return false;
         v = static_cast<i64>(x);
         return true;
     };
     auto parse_u64 = [&](u64& v) {
-        if (!raw.empty() && raw.front() == '-') return false;
+        if (raw.empty() || raw.front() < '0' || raw.front() > '9') return false;
         errno = 0;
         char* end = nullptr;
         const unsigned long long x = std::strtoull(raw.c_str(), &end, 10);
-        if (errno == ERANGE || end == raw.c_str() || *end != '\0') return false;
+        if (errno == ERANGE || end == raw.c_str() || end != raw.data() + raw.size()) return false;
         v = static_cast<u64>(x);
         return true;
     };
@@ -121,7 +121,7 @@ bool apply_key(WorldConfig& c, const std::string& k, const std::string& raw, std
         errno = 0;
         char* end = nullptr;
         const double x = std::strtod(raw.c_str(), &end);
-        if (errno == ERANGE || end == raw.c_str() || *end != '\0' || !std::isfinite(x))
+        if (errno == ERANGE || end == raw.c_str() || end != raw.data() + raw.size() || !std::isfinite(x))
             return false;
         v = x;
         return true;
@@ -176,7 +176,11 @@ bool apply_key(WorldConfig& c, const std::string& k, const std::string& raw, std
     probe = c;
     if (apply_u64_net(probe, k, 0)) {
         u64 v = 0;
-        if (!parse_u64(v)) { err = k + "=" + raw; return false; }
+        if (!parse_u64(v) ||
+            (k != "sim.volatile_qty_multiplier" && v > std::numeric_limits<u32>::max())) {
+            err = k + "=" + raw;
+            return false;
+        }
         return apply_u64_net(c, k, v);
     }
     if (k == "risk.kill_switch" || k == "risk.enabled" || k == "mm.enabled" ||
