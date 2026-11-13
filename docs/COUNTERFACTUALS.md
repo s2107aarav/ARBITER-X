@@ -7,8 +7,8 @@ configurations that differ in exactly the variable(s) under study. Because
 every random draw comes from `(master_seed, stream_id)` streams, variants
 consume the same unit variates: changing a latency changes *delays*, not the
 underlying randomness. Histories are therefore identical until the changed
-variable reorders events, and the state-hash timeline localizes that
-moment.
+variable reorders events. The state-hash timeline bounds divergence between
+recorded checkpoints; it does not identify the exact causal event.
 
 Common random numbers reduce variance by pairing runs. They do
 not by themselves make the estimate causal; the causal reading is always
@@ -24,16 +24,16 @@ The simulator supports two interference modes:
   strategies. The measured effect of a strategy-side change includes market
   feedback. This is the flagship mode (it is the more realistic structure).
 * **frozen** (`bots_observe_shadow = true`): bots observe a shadow touch
-  computed without strategy orders, so their quoting input is exogenous
-  to the strategies. In this mode a strategy-side counterfactual faces a
-  flow process that cannot react to it (SUTVA holds by construction for the
-  observation channel).
+  computed without strategy orders. This removes strategy quotes from the
+  observed touch. Bots still react to the remaining book and real trades,
+  so flow can change across counterfactual variants.
 
 Frozen mode does not change matching. Bot takers still execute against
 whatever rests at the touch, including strategy orders, a crossed market
 is genuine interference, not an observation artifact. The fixed/frozen
-comparison therefore estimates the observation-channel feedback part of
-interference bias in this simulator, not real-market SUTBA violations.
+comparison probes sensitivity to the bot observation filter in an interactive
+world. It does not create fixed exogenous flow or estimate real-market
+interference.
 
 ## The flagship: fixed-total latency allocation
 

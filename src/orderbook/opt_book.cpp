@@ -10,7 +10,8 @@
 namespace arbiter {
 
 OptBook::OptBook(const Options& opt) : opt_(opt) {
-    if (opt_.min_tick < DomainBounds::kMinPrice || opt_.max_tick < opt_.min_tick ||
+    if (opt_.min_tick < DomainBounds::kMinPrice || opt_.max_tick > DomainBounds::kMaxPrice ||
+        opt_.max_tick < opt_.min_tick ||
         static_cast<u64>(opt_.max_tick) - static_cast<u64>(opt_.min_tick) >=
             static_cast<u64>(0xFFFFFFFFu))
         throw std::invalid_argument("invalid OptBook price span");
@@ -493,9 +494,12 @@ LadderView OptBook::to_ladder() const {
 }
 
 Status OptBook::rest_order(const Order& o) {
+    if (o.type != OrderType::Limit || (o.tif != Tif::GTC && o.tif != Tif::GTD))
+        return fail(Errc::InvalidArgument, o.id);
     if (Status s = validate_order_entry(o, index_.contains(o.id)); !s) return s;
     if (o.qty == 0 || o.leaves == 0 || o.leaves > o.qty) return fail(Errc::OutOfRange, o.id);
     if (o.price < opt_.min_tick || o.price > opt_.max_tick) return fail(Errc::OutOfRange, o.id);
+    if (index_.size() >= opt_.max_orders) return fail(Errc::Capacity, o.id);
     // One node + one index slot, secured before any mutation.
     if (Status s = prepare_rest_resources(o.id); !s) return s;
     Order copy = o;

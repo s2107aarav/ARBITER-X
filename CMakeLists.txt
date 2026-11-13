@@ -142,6 +142,10 @@ if(BUILD_TESTING AND ARBITER_BUILD_TESTS)
     add_test(NAME test_cli_rejects_unknown COMMAND arbiter definitely-not-a-command)
     set_tests_properties(test_cli_help test_cli_rejects_unknown PROPERTIES LABELS "fast;cli")
     set_tests_properties(test_cli_rejects_unknown PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME test_cli_validation COMMAND ${CMAKE_COMMAND}
+      "-DPROGRAM=$<TARGET_FILE:arbiter>" "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cli_validation.cmake)
+    set_tests_properties(test_cli_validation PROPERTIES LABELS "integration;cli")
   endif()
   if(ARBITER_BUILD_BENCHMARKS)
     add_test(NAME test_bench_help COMMAND arbiter_bench --help)

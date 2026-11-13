@@ -1,8 +1,8 @@
 #pragma once
 // Minimal sectioned key=value configuration parser (deterministic, dependency
 // free). Deliberately NOT YAML: the experiment format needs to be parseable by
-// 200 lines of auditable C++ with no external dependencies. See
-// docs/COUNTERFACTUALS.md for the experiment config grammar.
+// 200 lines of auditable C++ with no external dependencies. Examples live
+// under configs/.
 //
 //   # comment
 //   [experiment]

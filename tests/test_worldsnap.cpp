@@ -1,12 +1,14 @@
 #include "testfw.hpp"
 
 #include "arbiter/latency.hpp"
+#include "arbiter/crc32.hpp"
 #include "arbiter/metrics.hpp"
 #include "arbiter/world.hpp"
 #include "arbiter/world_snapshot.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <filesystem>
 #include <vector>
@@ -117,6 +119,77 @@ AX_TEST(worldrestore_capture_is_nondestructive_and_stable) {
     const u64 h = w.state_hash();
     w.run(1000);
     CHECK_NE(w.state_hash(), h);
+}
+
+AX_TEST(world_horizon_preserves_pending_events_and_finished_state) {
+    WorldConfig short_cfg = snap_test_config();
+    short_cfg.horizon_ns = 1;
+    World short_run(short_cfg, 42);
+    short_run.run();
+    const auto snapshot = short_run.capture_snapshot();
+    short_run.run();
+    CHECK_EQ(short_run.state_hash(), snapshot.state_hash);
+    WorldConfig longer = short_cfg;
+    longer.horizon_ns = 5'000'000;
+    World resumed(longer, 42), continuous(longer, 42);
+    CHECK(resumed.restore_snapshot(snapshot, longer, false));
+    resumed.run();
+    continuous.run();
+    CHECK_EQ(resumed.state_hash(), continuous.state_hash());
+}
+
+AX_TEST(snapshot_decoder_rejects_checksummed_truncation) {
+    std::filesystem::create_directories(kArt);
+    World world(snap_test_config(), 42);
+    world.run(100);
+    const std::string path = kArt + "/truncation.wsnap";
+    CHECK(write_world_snapshot(path, world.capture_snapshot()));
+    FILE* file = std::fopen(path.c_str(), "rb");
+    CHECK(file); if (!file) return;
+    std::string bytes;
+    char buffer[4096]; size_t count = 0;
+    while ((count = std::fread(buffer, 1, sizeof buffer, file)) != 0) bytes.append(buffer, count);
+    std::fclose(file);
+    const auto snapshot = world.capture_snapshot();
+    ByteWriter sim_prefix;
+    sim_prefix.put_u64(snapshot.sim.provider_rng);
+    sim_prefix.put_u64(snapshot.sim.taker_rng);
+    sim_prefix.put_u64(snapshot.sim.regime_rng);
+    sim_prefix.put_u64(snapshot.sim.price_rng);
+    sim_prefix.put_i64(snapshot.sim.next_provider_t);
+    sim_prefix.put_i64(snapshot.sim.next_taker_t);
+    const auto sim_start = bytes.find(sim_prefix.data());
+    CHECK_NE(sim_start, std::string::npos); if (sim_start == std::string::npos) return;
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        std::string malformed = bytes;
+        if (scenario == 0) {
+            const i64 invalid_regime = i64{1} << 32;
+            std::memcpy(malformed.data() + sim_start + 48, &invalid_regime, sizeof invalid_regime);
+        } else if (scenario == 1) {
+            malformed[sim_start + 120] = 2;  // sim boost flag
+        } else {
+            malformed[404] = 2;  // first config boolean in format 15
+        }
+        const u32 checksum = crc32(malformed.data() + 16, malformed.size() - 16);
+        std::memcpy(malformed.data() + 12, &checksum, sizeof checksum);
+        file = std::fopen(path.c_str(), "wb");
+        CHECK(file); if (!file) return;
+        CHECK_EQ(std::fwrite(malformed.data(), 1, malformed.size(), file), malformed.size());
+        CHECK_EQ(std::fclose(file), 0);
+        CHECK(!read_world_snapshot(path));
+    }
+    for (size_t length = 16; length < bytes.size(); length += std::max<size_t>(1, bytes.size() / 40)) {
+        std::string truncated = bytes.substr(0, length);
+        const u32 body_size = static_cast<u32>(length - 16);
+        const u32 checksum = crc32(truncated.data() + 16, body_size);
+        std::memcpy(truncated.data() + 8, &body_size, sizeof body_size);
+        std::memcpy(truncated.data() + 12, &checksum, sizeof checksum);
+        file = std::fopen(path.c_str(), "wb");
+        CHECK(file); if (!file) return;
+        CHECK_EQ(std::fwrite(truncated.data(), 1, truncated.size(), file), truncated.size());
+        CHECK_EQ(std::fclose(file), 0);
+        CHECK(!read_world_snapshot(path));
+    }
 }
 
 AX_TEST(worldrestore_chained_snapshots_equivalent) {
@@ -577,16 +650,18 @@ WorldSnapshot semsnap_base() {
 void expect_rejected(const WorldSnapshot& snap, World& live, const WorldConfig& cfg,
                      const char* what) {
     WorldSnapshot bad = snap;  // fresh copy per case
+    const u64 live_hash_before = live.state_hash();
     const std::string path = kArt + "/semcorrupt.wsnap";
     CHECK(write_world_snapshot(path, bad));
     auto reloaded = read_world_snapshot(path);
-    CHECK(reloaded);
-    if (!reloaded) return;
-    const u64 live_hash_before = live.state_hash();
-    World probe(cfg, live_hash_before);  // unused seed guard
-    (void)probe;
+    if (!reloaded) {
+        CHECK_EQ(reloaded.status.code, Errc::SnapshotInvalid);
+        CHECK_EQ(live.state_hash(), live_hash_before);
+        return;
+    }
     const Status st = live.restore_snapshot(reloaded.value, cfg, true);
     CHECK(!st);
+    CHECK_EQ(st.code, Errc::SnapshotInvalid);
     if (st) std::printf("  %s: NOT rejected\n", what);
     CHECK_EQ(live.state_hash(), live_hash_before);  // no partial mutation
 }

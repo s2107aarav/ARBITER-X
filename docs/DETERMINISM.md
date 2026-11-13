@@ -52,10 +52,9 @@ equal.
   unit variates; integer division for skews is C++-defined but compiler
   flags could theoretically change codegen around floating point.
   Repeatability is guaranteed only within the same documented build and
-  platform. Research-artifact reproduction therefore uses exact hashes only
-  when compiler and platform provenance match; otherwise it compares integer
-  counters exactly and floating metrics at a documented `1e-9` relative
-  tolerance, failing at the first field outside tolerance.
+  platform. Artifact reproduction compares the recorded state hashes and
+  integer economics exactly; it does not substitute a tolerance-based check
+  on another platform or toolchain.
 * **The engine is single-threaded.** Thread scheduling cannot change its
   event ordering. The unrelated SPSC experiment was retired.
 * **Filesystem durability** follows the journal contract: `flush()` puts

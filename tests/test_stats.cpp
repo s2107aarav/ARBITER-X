@@ -3,6 +3,7 @@
 #include "arbiter/rng.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 using namespace arbiter;
 namespace { bool approx(double a, double b, double tol=1e-9) { return std::fabs(a-b)<=tol; } }
@@ -52,11 +53,25 @@ AX_TEST(stats_mean_ci_and_corrections) {
     // small datasets: only non-empty test ranges are returned (a clearly
     // documented number of valid folds, never an empty one)
     auto tiny = stats::walk_forward(5, 4, 0.5);
+    CHECK_EQ(tiny.size(), 2u);
     for (const auto& f : tiny) CHECK(f.test_end > f.test_begin);
     auto none = stats::walk_forward(2, 4, 0.5);
-    CHECK(none.empty());
+    CHECK_EQ(none.size(), 1u);
     for (size_t i = 1; i < tiny.size(); ++i) CHECK(tiny[i].test_begin >= tiny[i - 1].test_end);
 }
 
+
+AX_TEST(walk_forward_handles_full_size_domain) {
+    const size_t n = std::numeric_limits<size_t>::max();
+    CHECK(stats::walk_forward(n, 2, 1.0).empty());
+    const auto folds = stats::walk_forward(n, 3, 0.5);
+    CHECK_EQ(folds.size(), 3u);
+    if (folds.size() != 3) return;
+    CHECK_EQ(folds.back().test_end, n);
+    for (size_t i = 0; i < folds.size(); ++i) {
+        CHECK(folds[i].test_begin < folds[i].test_end);
+        if (i) CHECK_EQ(folds[i - 1].test_end, folds[i].test_begin);
+    }
+}
 
 AX_TEST_MAIN

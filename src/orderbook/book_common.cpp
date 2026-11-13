@@ -1,6 +1,7 @@
 #include "arbiter/book_common.hpp"
 
 #include <unordered_set>
+#include <limits>
 
 namespace arbiter {
 
@@ -43,6 +44,8 @@ Status check_book_invariants(const LadderView& v) {
     auto check_side = [&](const std::vector<LadderLevel>& levels, bool descending) -> Status {
         for (size_t i = 0; i < levels.size(); ++i) {
             const auto& lvl = levels[i];
+            if (lvl.price < DomainBounds::kMinPrice || lvl.price > DomainBounds::kMaxPrice)
+                return fail(Errc::OutOfRange, static_cast<u64>(lvl.price));
             if (lvl.orders.empty()) return fail(Errc::Internal, static_cast<u64>(lvl.price));
             if (i > 0) {
                 Price prev = levels[i - 1].price;
@@ -51,7 +54,10 @@ Status check_book_invariants(const LadderView& v) {
             }
             Qty sum = 0;
             for (const auto& o : lvl.orders) {
-                if (o.leaves == 0 || o.leaves > o.qty) return fail(Errc::Internal, o.id);
+                if (o.id == 0 || o.id > DomainBounds::kMaxOrderId || o.qty > DomainBounds::kMaxQty ||
+                    o.leaves == 0 || o.leaves > o.qty ||
+                    o.leaves > std::numeric_limits<Qty>::max() - sum)
+                    return fail(Errc::Internal, o.id);
                 if (!ids.insert(o.id).second) return fail(Errc::Duplicate, o.id);
                 sum += o.leaves;
             }
@@ -89,14 +95,14 @@ void encode_ladder(ByteWriter& w, const LadderView& v) {
 bool decode_ladder(ByteReader& r, LadderView& v) {
     auto side = [&](std::vector<LadderLevel>& out) -> bool {
         const u64 n = r.get_u64();
-        if (!r.ok() || n > (1u << 20)) return false;
+        if (!r.ok() || n > (1u << 20) || n > r.remaining() / 24) return false;
         out.reserve(static_cast<size_t>(n));
         for (u64 i = 0; i < n; ++i) {
             LadderLevel lvl;
             lvl.price = r.get_i64();
             lvl.total_qty = r.get_u64();
             const u64 orders = r.get_u64();
-            if (!r.ok() || orders > (1u << 24)) return false;
+            if (!r.ok() || orders > (1u << 24) || orders > r.remaining() / 24) return false;
             lvl.orders.reserve(static_cast<size_t>(orders));
             for (u64 j = 0; j < orders; ++j) {
                 LadderOrder o;

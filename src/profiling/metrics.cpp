@@ -1,4 +1,5 @@
 #include "arbiter/metrics.hpp"
+#include "../core/json.hpp"
 
 #include <cstdio>
 #include <string>
@@ -8,7 +9,7 @@ namespace arbiter {
 std::string runstats_to_json(const RunStats& s, const std::string& name) {
     char buf[4096];
     std::string out = "{\n";
-    out += "  \"name\": \"" + name + "\",\n";
+    out += "  \"name\": " + json_quote(name) + ",\n";
     std::snprintf(buf, sizeof buf, "  \"events_processed\": %llu,\n", (unsigned long long)s.events_processed);
     out += buf;
     std::snprintf(buf, sizeof buf, "  \"journal_records\": %llu,\n", (unsigned long long)s.journal_records);
@@ -72,7 +73,7 @@ std::string runstats_to_json(const RunStats& s, const std::string& name) {
     std::snprintf(buf, sizeof buf, "  \"mm_auth_filled_qty\": %llu,\n", (unsigned long long)s.mm_auth_filled_qty);
     out += buf;
     std::snprintf(buf, sizeof buf, "  \"mm_auth_marked_pnl_ticks_qty\": %lld,\n",
-                  (long long)(s.mm_auth_cash + s.mm_auth_inventory * s.final_mid));
+                  (long long)saturating_add_i64(s.mm_auth_cash, saturating_mul_i64(s.mm_auth_inventory, s.final_mid)));
     out += buf;
     std::snprintf(buf, sizeof buf, "  \"mom_auth_inventory\": %lld,\n", (long long)s.mom_auth_inventory);
     out += buf;
@@ -83,7 +84,7 @@ std::string runstats_to_json(const RunStats& s, const std::string& name) {
     std::snprintf(buf, sizeof buf, "  \"mom_auth_filled_qty\": %llu,\n", (unsigned long long)s.mom_auth_filled_qty);
     out += buf;
     std::snprintf(buf, sizeof buf, "  \"mm_marked_pnl_ticks_qty\": %lld,\n",
-                  (long long)(s.mm_cash + s.mm_inventory * s.final_mid));
+                  (long long)saturating_add_i64(s.mm_cash, saturating_mul_i64(s.mm_inventory, s.final_mid)));
     out += buf;
     std::snprintf(buf, sizeof buf, "  \"mm_inference_fills\": %llu,\n", (unsigned long long)s.mm_inference_fill_qty);
     out += buf;
@@ -179,7 +180,7 @@ std::string runstats_summary(const RunStats& s, const std::string& name) {
     out += buf;
     std::snprintf(buf, sizeof buf, "  MM: inv %lld  cash %lld  marked PnL %lld (ticks*qty)\n",
                   (long long)s.mm_inventory, (long long)s.mm_cash,
-                  (long long)(s.mm_cash + s.mm_inventory * s.final_mid));
+                  (long long)saturating_add_i64(s.mm_cash, saturating_mul_i64(s.mm_inventory, s.final_mid)));
     out += buf;
     if (s.mm_max_drawdown > 0 || s.mm_marked_pnl_peak != 0) {
         std::snprintf(buf, sizeof buf, "  MM drawdown: max %lld (peak %lld, marked at each fill)\n",

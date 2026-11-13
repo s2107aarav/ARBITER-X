@@ -31,17 +31,19 @@ LogicalNs add_time_checked(LogicalNs base, LogicalNs delta) {
 // only; it never enters comparable state.
 LogicalNs exp_draw(Rng& rng, double per_ns_rate) {
     double u = rng.unit();
+    if (per_ns_rate <= 0.0) return std::numeric_limits<LogicalNs>::max();
     if (u <= 0) u = 1e-12;
     double dt = -std::log(1.0 - u) / per_ns_rate;
     if (dt < 1.0) dt = 1.0;
-    if (dt > 1e12) dt = 1e12;
+    if (dt >= static_cast<double>(std::numeric_limits<LogicalNs>::max()))
+        return std::numeric_limits<LogicalNs>::max();
     return static_cast<LogicalNs>(dt);
 }
 }  // namespace
 
 void MarketSim::schedule_provider() {
     const double mult = regime_ == 1 ? cfg_.volatile_rate_multiplier : 1.0;
-    next_provider_t_ = add_time_checked(
+    next_provider_t_ = saturating_add_i64(
         now_, exp_draw(provider_rng_, cfg_.provider_arrival_per_ms * 1e-6 * mult));
 }
 
@@ -54,7 +56,7 @@ void MarketSim::schedule_taker() {
     if (taker_boost_active_ && cfg_.taker_self_excitation > 0.0)
         rate /= (1.0 - cfg_.taker_self_excitation);
     taker_boost_active_ = false;
-    next_taker_t_ = add_time_checked(now_, exp_draw(taker_rng_, rate));
+    next_taker_t_ = saturating_add_i64(now_, exp_draw(taker_rng_, rate));
 }
 
 void MarketSim::note_trade(Price price) {
@@ -89,6 +91,16 @@ Price MarketSim::provider_price(Side s, bool deep) const {
 }
 
 BotAction MarketSim::next_action() {
+    if (next_action_time() == std::numeric_limits<LogicalNs>::max()) return {};
+    if (now_ < next_provider_t_ && now_ < next_taker_t_) {
+        if (now_ >= regime_until_) {
+            regime_ = regime_rng_.chance(0.5) ? 1 - regime_ : regime_;
+            regime_until_ = add_time_checked(now_, cfg_.regime_dwell_ns);
+            schedule_provider();
+            schedule_taker();
+        }
+        return {};
+    }
     ++actions_;
     // regime switch check
     if (now_ >= regime_until_) {

@@ -24,7 +24,7 @@ struct WorldConfig {
     // fields (journal_events, journal_path, checkpoint/hash cadence) are
     // excluded: they never feed back into the deterministic world. Any new
     // behavior-changing field MUST be added to WorldConfig::hash and bump
-    // the tag, see tests/test_quant.cpp (config_hash_covers_all_fields).
+    // the tag, see tests/test_world.cpp (config_hash_covers_all_behavior_fields).
     u64 hash() const;
 
     // --- logical latency knobs (the counterfactual variables) ---
@@ -51,12 +51,9 @@ struct WorldConfig {
     i64 fee_per_lot = 0;
     // Interference control (docs/COUNTERFACTUALS.md "fixed vs reactive
     // world"): when true, bots observe a SHADOW touch computed WITHOUT
-    // strategy orders, so their behavior is exogenous to the strategies,
-    // the counterfactual then measures strategy-vs-frozen-market effects
-    // (no SUTVA violation from bot reactions). When false (default), bots
-    // see the live touch and may react to strategy quotes: the measured
-    // effect includes market feedback. Comparing the two modes estimates
-    // interference bias in this simulator.
+    // strategy orders. Matching and trade-driven bot state can still
+    // transmit feedback. When false (default), bots also observe strategy
+    // quotes directly. Comparing the modes probes that observation filter.
     bool bots_observe_shadow = false;
 
     // --- risk ---

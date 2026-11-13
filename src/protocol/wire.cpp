@@ -42,7 +42,7 @@ std::string wire_encode_snapshot(u8 channel, u64 md_seq, const void* payload, si
     h.put_u32(static_cast<u32>(n));
     h.put_u32(crc32(payload, n));
     std::string out = h.data();
-    out.append(static_cast<const char*>(payload), n);
+    if (n != 0) out.append(static_cast<const char*>(payload), n);
     return out;
 }
 

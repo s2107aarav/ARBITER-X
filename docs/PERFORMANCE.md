@@ -1,8 +1,8 @@
 # Performance methodology
 
-Performance results are produced by `arbiter_bench`; generated logs are not
-committed because wall-clock measurements depend on machine, toolchain, build
-type, and system load. The citable exchange snapshot below records three runs
+Performance results are produced by `arbiter_bench`; ad-hoc logs belong in
+ignored `artifacts/` because wall-clock measurements depend on machine,
+toolchain, build type, and system load. The retained exchange snapshot records three runs
 with their provenance; new claims should include equivalent raw output and
 environment details.
 

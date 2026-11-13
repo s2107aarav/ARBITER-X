@@ -116,6 +116,11 @@ Status JournalWriter::sync() {
 
 void JournalWriter::close() noexcept {
     if (f_) {
+        if (!buf_.empty()) {
+            (void)std::fwrite(buf_.data(), 1, buf_.size(), f_);
+            buf_.clear();
+            unflushed_ = 0;
+        }
         std::fflush(f_);
         std::fclose(f_);
         f_ = nullptr;
@@ -193,12 +198,17 @@ bool JournalReader::has_next() {
     u32 len = 0;
     const size_t got = std::fread(&len, 1, 4, f_);
     if (got == 0) {
+        if (std::ferror(f_)) {
+            failed_ = true;
+            error_ = fail(Errc::IoError, pos_);
+            return false;
+        }
         eof_ = true;  // clean EOF: the boundary is a valid stopping point
         return false;
     }
     if (got != 4) {
         failed_ = true;
-        error_ = fail(Errc::JournalCorrupt, pos_);
+        error_ = fail(std::ferror(f_) ? Errc::IoError : Errc::JournalCorrupt, pos_);
         return false;
     }
     peeked_len_ = len;
@@ -220,20 +230,25 @@ Result<Event> JournalReader::next() {
     } else {
         const size_t got = std::fread(&len, 1, 4, f_);
         if (got == 0) {
+            if (std::ferror(f_)) {
+                failed_ = true;
+                error_ = fail(Errc::IoError, pos_);
+                return ErrT<Event>(Errc::IoError, pos_);
+            }
             eof_ = true;  // clean EOF: the boundary is a valid stopping point
             return ErrT<Event>(Errc::NotFound, pos_);
         }
         if (got != 4) {
             failed_ = true;
-            error_ = fail(Errc::JournalCorrupt, pos_);
-            return ErrT<Event>(Errc::JournalCorrupt, pos_);
+            error_ = fail(std::ferror(f_) ? Errc::IoError : Errc::JournalCorrupt, pos_);
+            return ErrT<Event>(error_.code, error_.context);
         }
     }
     pos_ += 4;
     if (std::fread(&crc, 1, 4, f_) != 4) {
         failed_ = true;
-        error_ = fail(Errc::JournalCorrupt, pos_);
-        return ErrT<Event>(Errc::JournalCorrupt, pos_);
+        error_ = fail(std::ferror(f_) ? Errc::IoError : Errc::JournalCorrupt, pos_);
+        return ErrT<Event>(error_.code, error_.context);
     }
     pos_ += 4;
     if (len == 0 || len > (1u << 24)) {  // sanity bound: 16 MiB per event max
@@ -244,8 +259,8 @@ Result<Event> JournalReader::next() {
     if (buf_.size() < len) buf_.resize(len);
     if (std::fread(buf_.data(), 1, len, f_) != len) {
         failed_ = true;
-        error_ = fail(Errc::JournalCorrupt, pos_);  // truncated frame
-        return ErrT<Event>(Errc::JournalCorrupt, pos_);
+        error_ = fail(std::ferror(f_) ? Errc::IoError : Errc::JournalCorrupt, pos_);
+        return ErrT<Event>(error_.code, error_.context);
     }
     const u32 actual = crc32(buf_.data(), len);
     if (actual != crc) {
@@ -314,6 +329,8 @@ JournalVerifyReport journal_verify(const std::string& path) {
 Result<u64> journal_recover(const std::string& path) {
     JournalVerifyReport rep = scan_journal(path);
     if (rep.clean) return OkT(rep.records);
+    if (rep.first_problem.code == Errc::IoError)
+        return ErrT<u64>(Errc::IoError, rep.first_problem.context);
     // Replay to find the byte offset after the last good frame. The reader's
     // offset() is exactly that after each successful next().
     auto rd = JournalReader::open(path);
@@ -327,6 +344,8 @@ Result<u64> journal_recover(const std::string& path) {
         good_end = r.offset();
         kept = r.records_read();
     }
+    if (r.failed() && r.error().code == Errc::IoError)
+        return ErrT<u64>(Errc::IoError, r.error().context);
     if (::truncate(path.c_str(), static_cast<off_t>(good_end)) != 0)
         return ErrT<u64>(Errc::IoError, static_cast<u64>(errno));
     return OkT(kept);

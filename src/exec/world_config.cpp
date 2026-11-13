@@ -222,6 +222,26 @@ std::string validate_world_config(const WorldConfig& c) {
     if (c.momentum.max_inventory < 0 || c.momentum.max_inventory > kMaxPosition)
         return bad("momentum.max_inventory outside the safe arithmetic range");
     if (c.momentum.id_base == 0) return bad("momentum.id_base == 0 (order ids start at 1)");
+    if (c.momentum.id_base > DomainBounds::kMaxOrderId)
+        return bad("momentum.id_base exceeds the order id domain");
+    if (c.max_events != 0) {
+        // Each event can generate at most two MM orders, one momentum
+        // order, or one bot order. Reserve disjoint ranges for that budget.
+        constexpr u64 bot_base = MarketSim::kFirstOrderId;
+        if (c.max_events - 1 > DomainBounds::kMaxOrderId - bot_base)
+            return bad("max_events can exhaust bot order ids");
+        if (c.mm.enabled && c.max_events > (bot_base - 1) / 2)
+            return bad("max_events can overlap market-maker and bot order ids");
+        if (c.momentum.enabled) {
+            if (c.max_events - 1 > DomainBounds::kMaxOrderId - c.momentum.id_base)
+                return bad("max_events can exhaust momentum order ids");
+            const u64 last_momentum = c.momentum.id_base + c.max_events - 1;
+            const u64 last_bot = bot_base + c.max_events - 1;
+            if ((c.mm.enabled && c.momentum.id_base <= 2 * c.max_events) ||
+                (c.momentum.id_base <= last_bot && last_momentum >= bot_base))
+                return bad("momentum order id range overlaps another participant");
+        }
+    }
     if (c.mm.account == 0 || c.momentum.account == 0)
         return bad("strategy account ids must be nonzero");
 

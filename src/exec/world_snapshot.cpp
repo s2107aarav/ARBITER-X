@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <bit>
 #include <cstdio>
+#include <limits>
 
 namespace arbiter {
 
@@ -95,6 +96,12 @@ void w_config(ByteWriter& w, const WorldConfig& c) {
 }
 
 bool r_config(ByteReader& r, WorldConfig& c) {
+    bool valid_bools = true;
+    const auto boolean = [&]() {
+        const u8 value = r.get_u8();
+        valid_bools = valid_bools && value <= 1;
+        return value != 0;
+    };
     auto net = [&](NetProfile& np) {
         np.base_delay_ns = r.get_i64();
         np.jitter_ns = r.get_i64();
@@ -131,9 +138,9 @@ bool r_config(ByteReader& r, WorldConfig& c) {
     c.horizon_ns = r.get_i64();
     c.max_events = r.get_u64();
     c.fee_per_lot = r.get_i64();
-    c.bots_observe_shadow = r.get_u8() != 0;
-    c.risk.enabled = r.get_u8() != 0;
-    c.risk.kill_switch = r.get_u8() != 0;
+    c.bots_observe_shadow = boolean();
+    c.risk.enabled = boolean();
+    c.risk.kill_switch = boolean();
     c.risk.min_price = r.get_i64();
     c.risk.max_price = r.get_i64();
     c.risk.max_order_qty = r.get_u64();
@@ -150,26 +157,26 @@ bool r_config(ByteReader& r, WorldConfig& c) {
     c.mm.skew_ticks = r.get_i64();
     c.mm.max_inventory = r.get_i64();
     c.mm.requote_interval_ns = r.get_i64();
-    c.mm.enabled = r.get_u8() != 0;
+    c.mm.enabled = boolean();
     c.momentum.account = r.get_u32();
     c.momentum.size = r.get_u64();
     c.momentum.min_signal = r.get_i64();
     c.momentum.window = r.get_u64();
     c.momentum.cooldown_ns = r.get_i64();
     c.momentum.max_inventory = r.get_i64();
-    c.momentum.enabled = r.get_u8() != 0;
+    c.momentum.enabled = boolean();
     c.momentum.id_base = r.get_u64();
-    c.journal_events = r.get_u8() != 0;
+    c.journal_events = boolean();
     const u64 path_len = r.get_u64();
-    if (!r.ok() || path_len > (1u << 16)) return false;
+    if (!r.ok() || path_len > (1u << 16) || path_len > r.remaining()) return false;
     c.journal_path.resize(static_cast<size_t>(path_len));
     if (path_len && !r.get_bytes(c.journal_path.data(), static_cast<size_t>(path_len)))
         return false;
     c.warmup_ns = r.get_i64();
     c.checkpoint_every_events = r.get_u64();
     c.hash_every_events = r.get_u64();
-    c.stage_tracing = r.get_u8() != 0;
-    return r.ok();
+    c.stage_tracing = boolean();
+    return r.ok() && valid_bools;
 }
 
 void w_order(ByteWriter& w, const SnapOrder& o) {
@@ -457,6 +464,7 @@ Status write_world_snapshot(const std::string& path, const WorldSnapshot& s) {
     ByteWriter head;
     head.put_bytes(kMagic, 4);
     head.put_u32(s.format_version);
+    if (w.size() > std::numeric_limits<u32>::max()) return fail(Errc::Capacity, w.size());
     head.put_u32(static_cast<u32>(w.size()));
     head.put_u32(crc32(w.data().data(), w.size()));
 
@@ -477,8 +485,13 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     std::string all;
     char buf[8192];
     size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) all.append(buf, n);
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
+        all.append(buf, n);
+        if (n < sizeof buf || std::ferror(f) || std::feof(f)) break;
+    }
+    const bool read_error = std::ferror(f) != 0;
     std::fclose(f);
+    if (read_error) return ErrT<WorldSnapshot>(Errc::IoError);
 
     if (all.size() < kHeaderSize) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 0);
     const u8* p = reinterpret_cast<const u8*>(all.data());
@@ -515,7 +528,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     if (!r.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 3);
 
     const u64 qn = r.get_u64();
-    if (qn > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 4);
+    if (!r.ok() || qn > (1u << 26) || qn > r.remaining() / 64) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 4);
     s.queue.reserve(static_cast<size_t>(qn));
     for (u64 i = 0; i < qn; ++i) {
         SnapSchedEvent e;
@@ -534,7 +547,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     if (!r_ladder(r, s.book)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 6);
 
     const u64 oa_n = r.get_u64();
-    if (oa_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 25);
+    if (!r.ok() || oa_n > (1u << 26) || oa_n > r.remaining() / 12) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 25);
     s.order_accounts.resize(static_cast<size_t>(oa_n));
     for (u64 i = 0; i < oa_n; ++i) {
         const u64 id = r.get_u64();
@@ -549,7 +562,9 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     s.sim.price_rng = r.get_u64();
     s.sim.next_provider_t = r.get_i64();
     s.sim.next_taker_t = r.get_i64();
-    s.sim.regime = static_cast<int>(r.get_i64());
+    const i64 regime = r.get_i64();
+    if (regime < 0 || regime > 1) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 8);
+    s.sim.regime = static_cast<int>(regime);
     s.sim.regime_until = r.get_i64();
     s.sim.actions = r.get_u64();
     s.sim.bias = r.get_i64();
@@ -558,10 +573,12 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     s.sim.last_bb = r.get_i64();
     s.sim.last_ba = r.get_i64();
     s.sim.now = r.get_i64();
-    s.sim.taker_boost_active = r.get_u8() != 0;  // v9
+    const u8 boost = r.get_u8();
+    if (boost > 1) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 8);
+    s.sim.taker_boost_active = boost != 0;
     s.sim.last_taker_side = r.get_u8();           // v9
     const u64 live_n = r.get_u64();
-    if (live_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 7);
+    if (!r.ok() || live_n > (1u << 26) || live_n > r.remaining() / 8) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 7);
     s.sim.live_provider_orders.resize(static_cast<size_t>(live_n));
     for (u64 i = 0; i < live_n; ++i) s.sim.live_provider_orders[static_cast<size_t>(i)] = r.get_u64();
     if (!r.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 8);
@@ -578,7 +595,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     s.mm.quote_updates = r.get_u64();
     s.mm.confirm_seq_counter = r.get_u64();
     const u64 own_n = r.get_u64();
-    if (own_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 9);
+    if (!r.ok() || own_n > (1u << 26) || own_n > r.remaining() / 42) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 9);
     s.mm.own.resize(static_cast<size_t>(own_n));
     for (u64 i = 0; i < own_n; ++i) {
         SnapOwn& o = s.mm.own[static_cast<size_t>(i)];
@@ -599,13 +616,13 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     s.mom.next_order_id = r.get_u64();
     s.mom.filled_qty = r.get_u64();  // v9
     const u64 signs_n = r.get_u64();
-    if (signs_n > (1u << 20)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 12);
+    if (!r.ok() || signs_n > (1u << 20) || signs_n > r.remaining() / 8) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 12);
     s.mom.signs.resize(static_cast<size_t>(signs_n));
     for (u64 i = 0; i < signs_n; ++i) s.mom.signs[static_cast<size_t>(i)] = r.get_i64();
 
     // risk (per account; v6 isolation)
     const u64 rk_n = r.get_u64();
-    if (rk_n > (1u << 16)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 13);
+    if (!r.ok() || rk_n > (1u << 16) || rk_n > r.remaining() / 100) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 13);
     s.risk_accounts.resize(static_cast<size_t>(rk_n));
     for (u64 i = 0; i < rk_n; ++i) {
         SnapRiskAccount& ra = s.risk_accounts[static_cast<size_t>(i)];
@@ -615,14 +632,14 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
         ra.rejected = r.get_u64();
         for (u64& v : ra.by_reason) v = r.get_u64();
         const u64 win_n = r.get_u64();
-        if (!r.ok() || win_n > (1u << 24)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 13);
+        if (!r.ok() || win_n > (1u << 24) || win_n > r.remaining() / 8) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 13);
         ra.window.resize(static_cast<size_t>(win_n));
         for (u64 k = 0; k < win_n; ++k) ra.window[static_cast<size_t>(k)] = r.get_i64();
     }
     if (!r.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 14);
 
     const u64 ids_n = r.get_u64();
-    if (ids_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 15);
+    if (!r.ok() || ids_n > (1u << 26) || ids_n > r.remaining() / 8) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 15);
     s.gateway_known_ids.resize(static_cast<size_t>(ids_n));
     for (u64 i = 0; i < ids_n; ++i) s.gateway_known_ids[static_cast<size_t>(i)] = r.get_u64();
     for (u64& v : s.channel_rng) v = r.get_u64();
@@ -632,7 +649,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
 
     auto r_evmap = [&](std::vector<std::pair<u64, Event>>& m) -> bool {
         const u64 count = r.get_u64();
-        if (!r.ok() || count > (1u << 26)) return false;
+        if (!r.ok() || count > (1u << 26) || count > r.remaining() / (8 + kEncodedEventSize)) return false;
         m.reserve(static_cast<size_t>(count));
         for (u64 i = 0; i < count; ++i) {
             const u64 seq = r.get_u64();
@@ -646,7 +663,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     {
         // MD packet attempts (v12)
         const u64 count = r.get_u64();
-        if (!r.ok() || count > (1u << 26))
+        if (!r.ok() || count > (1u << 26) || count > r.remaining() / 24)
             return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 30);
         s.md_packets.reserve(static_cast<size_t>(count));
         for (u64 i = 0; i < count; ++i) {
@@ -654,7 +671,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
             p.packet_id = r.get_u64();
             p.md_seq = r.get_u64();
             const u64 len = r.get_u64();
-            if (!r.ok() || len > (1u << 20))
+            if (!r.ok() || len > (1u << 20) || len > r.remaining())
                 return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 30);
             p.frame.resize(static_cast<size_t>(len));
             if (len && !r.get_bytes(p.frame.data(), static_cast<size_t>(len)))
@@ -669,7 +686,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     s.exec_seq = r.get_u64();
     auto r_seqset = [&](std::vector<u64>& out, u64 cap) -> bool {
         const u64 n = r.get_u64();
-        if (!r.ok() || n > cap) return false;
+        if (!r.ok() || n > cap || n > r.remaining() / 8) return false;
         out.resize(static_cast<size_t>(n));
         for (u64 i = 0; i < n; ++i) out[static_cast<size_t>(i)] = r.get_u64();
         return r.ok();
@@ -679,7 +696,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     // working-order risk reservations (v12)
     {
         const u64 n = r.get_u64();
-        if (!r.ok() || n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 34);
+        if (!r.ok() || n > (1u << 26) || n > r.remaining() / 20) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 34);
         s.reservations.resize(static_cast<size_t>(n));
         for (u64 i = 0; i < n; ++i) {
             SnapReservation& res = s.reservations[static_cast<size_t>(i)];
@@ -692,7 +709,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     // exchange-authoritative economics ledger (v12)
     {
         const u64 n = r.get_u64();
-        if (!r.ok() || n > (1u << 16)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 35);
+        if (!r.ok() || n > (1u << 16) || n > r.remaining() / 36) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 35);
         s.ledger.resize(static_cast<size_t>(n));
         for (u64 i = 0; i < n; ++i) {
             SnapLedger& l = s.ledger[static_cast<size_t>(i)];
@@ -706,7 +723,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     }
 
     const u64 infl_n = r.get_u64();
-    if (infl_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 19);
+    if (!r.ok() || infl_n > (1u << 26) || infl_n > r.remaining() / 81) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 19);
     s.inflight.resize(static_cast<size_t>(infl_n));
     for (u64 i = 0; i < infl_n; ++i) {
         SnapMsg& m = s.inflight[static_cast<size_t>(i)];
@@ -715,13 +732,13 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
         m.transport_seq = r.get_u64();
         if (!r_order(r, m.ord)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 20);
         const u64 flen = r.get_u64();
-        if (!r.ok() || flen > (1u << 20)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 27);
+        if (!r.ok() || flen > (1u << 20) || flen > r.remaining()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 27);
         m.frame.resize(static_cast<size_t>(flen));
         if (flen && !r.get_bytes(m.frame.data(), static_cast<size_t>(flen)))
             return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 27);
     }
     const u64 not_n = r.get_u64();
-    if (not_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 21);
+    if (!r.ok() || not_n > (1u << 26) || not_n > r.remaining() / 69) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 21);
     s.notifies.resize(static_cast<size_t>(not_n));
     for (u64 i = 0; i < not_n; ++i) {
         SnapNotify& nf = s.notifies[static_cast<size_t>(i)];
@@ -739,14 +756,14 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
         nf.fill.taker_side = r.get_u8();
         nf.fill.maker_side = r.get_u8();
         const u64 flen = r.get_u64();
-        if (!r.ok() || flen > (1u << 20)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 28);
+        if (!r.ok() || flen > (1u << 20) || flen > r.remaining()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 28);
         nf.frame.resize(static_cast<size_t>(flen));
         if (flen && !r.get_bytes(nf.frame.data(), static_cast<size_t>(flen)))
             return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 28);
         if (!r.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 22);
     }
     const u64 mk_n = r.get_u64();
-    if (!r.ok() || mk_n > (1u << 24)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 29);
+    if (!r.ok() || mk_n > (1u << 24) || mk_n > r.remaining() / 21) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 29);
     s.markouts.resize(static_cast<size_t>(mk_n));
     for (u64 i = 0; i < mk_n; ++i) {
         SnapMarkout& m = s.markouts[static_cast<size_t>(i)];
@@ -757,7 +774,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     }
     if (!r.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 29);
     const u64 ost_n = r.get_u64();
-    if (ost_n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 23);
+    if (!r.ok() || ost_n > (1u << 26) || ost_n > r.remaining() / 16) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 23);
     s.order_sent_t.resize(static_cast<size_t>(ost_n));
     for (u64 i = 0; i < ost_n; ++i) {
         const u64 id = r.get_u64();
@@ -767,7 +784,7 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     // open fill-report table (v12)
     {
         const u64 n = r.get_u64();
-        if (!r.ok() || n > (1u << 26)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 36);
+        if (!r.ok() || n > (1u << 26) || n > r.remaining() / 16) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 36);
         s.open_fill_reports.resize(static_cast<size_t>(n));
         for (u64 i = 0; i < n; ++i) {
             const u64 id = r.get_u64();

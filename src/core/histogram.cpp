@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace arbiter {
 
@@ -9,7 +10,8 @@ Histogram::Histogram(size_t reservoir_cap) : capacity_(reservoir_cap) {
     samples_.reserve(capacity_);
 }
 
-void Histogram::record(double v) noexcept {
+void Histogram::record(double v) {
+    if (!std::isfinite(v)) throw std::invalid_argument("histogram observation must be finite");
     if (count_ == 0 || v < min_) min_ = v;
     if (count_ == 0 || v > max_) max_ = v;
     sum_ += v;
@@ -33,16 +35,19 @@ void Histogram::reserve(size_t n) {
 }
 
 double Histogram::percentile(double p) const {
-    if (count_ == 0) return 0.0;
+    if (!std::isfinite(p) || p < 0.0 || p > 1.0)
+        throw std::invalid_argument("histogram percentile outside [0,1]");
+    if (samples_.empty()) return 0.0;
     if (!sorted_) {
-        std::sort(samples_.begin(), samples_.end());
+        sorted_samples_ = samples_;
+        std::sort(sorted_samples_.begin(), sorted_samples_.end());
         sorted_ = true;
     }
     double idx = p * static_cast<double>(samples_.size() - 1);
     double lo = std::floor(idx), hi = std::ceil(idx);
     double frac = idx - lo;
-    double a = samples_[static_cast<size_t>(lo)];
-    double b = samples_[static_cast<size_t>(hi)];
+    double a = sorted_samples_[static_cast<size_t>(lo)];
+    double b = sorted_samples_[static_cast<size_t>(hi)];
     return a + (b - a) * frac;
 }
 
@@ -64,11 +69,13 @@ Histogram::Summary Histogram::summarize() const {
 
 void Histogram::reset() noexcept {
     samples_.clear();
+    sorted_samples_.clear();
     count_ = 0;
     sum_ = 0;
     min_ = 0;
     max_ = 0;
     sorted_ = false;
+    rng_state_ = 0x853c49e6748fea9bull;
 }
 
 }  // namespace arbiter

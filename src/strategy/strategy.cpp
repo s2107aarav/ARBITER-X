@@ -245,9 +245,28 @@ void MarketMakerStrategy::rebuild_view(const LadderView& ladder) {
             ++it;
         }
     }
-    // recompute ahead
-    for (auto& [id, oo] : own_)
-        if (oo.confirmed) oo.ahead = view_.qty_at(oo.side, oo.price);
+    // Recover confirmation and queue position from the authoritative FIFO.
+    const auto recover_side = [&](const std::vector<LadderLevel>& levels, Side side) {
+        for (const auto& level : levels) {
+            Qty ahead = 0;
+            for (const auto& order : level.orders) {
+                const auto it = own_.find(order.id);
+                if (it == own_.end()) { ahead += order.leaves; continue; }
+                auto& own = it->second;
+                own.side = side;
+                own.price = level.price;
+                own.leaves = order.leaves;
+                own.ahead = ahead;
+                own.confirmed = true;
+                own.confirm_seq = ++confirm_seq_counter_;
+            }
+        }
+    };
+    recover_side(ladder.bids, Side::Buy);
+    recover_side(ladder.asks, Side::Sell);
+    const Price bb = view_.best_bid(), ba = view_.best_ask();
+    have_md_ = bb != 0 && ba != 0;
+    if (have_md_) fair_ = (bb + ba) / 2;
 }
 
 void MarketMakerStrategy::hash_into(Hasher& h) const {
@@ -347,7 +366,8 @@ void MomentumStrategy::on_md_trade(Price price) {
     if (last_px_ != 0) {
         const i64 sign = price > last_px_ ? 1 : (price < last_px_ ? -1 : 0);
         signs_.push_back(sign);
-        if (signs_.size() > cfg_.window) signs_.erase(signs_.begin());
+        if (signs_.size() > cfg_.window)
+            signs_.erase(signs_.begin(), signs_.end() - static_cast<std::ptrdiff_t>(cfg_.window));
     }
     last_px_ = price;
 }
@@ -359,7 +379,9 @@ std::vector<StrategyAction> MomentumStrategy::on_timer() {
     for (i64 s : signs_) sum += s;
     if (std::abs(sum) < cfg_.min_signal) return acts;
     const Side side = sum > 0 ? Side::Buy : Side::Sell;
-    const i64 headroom = cfg_.max_inventory - (side == Side::Buy ? inventory_ : -inventory_);
+    const i64 headroom = side == Side::Buy
+                             ? saturating_sub_i64(cfg_.max_inventory, inventory_)
+                             : saturating_add_i64(cfg_.max_inventory, inventory_);
     if (headroom <= 0) return acts;
     const Qty q = std::min<Qty>(cfg_.size, static_cast<Qty>(headroom));
     StrategyAction a;

@@ -2,11 +2,11 @@
 
 ## What the market generator IS
 
-The `MarketSim` bot population is the exogenous flow process:
+The `MarketSim` bot population generates provider and taker flow:
 
 * **Provider bots** (`provider_arrival_per_ms`, 3 accounts): Poisson
   arrivals; join inside the spread at the observed touch (sometimes
-  deeper); random cancels (`cancel_fraction`). Both sides stay alive.
+  deeper); random cancels (`cancel_fraction`). Providers supply liquidity on both sides.
 * **Taker bots** (`taker_arrival_per_ms`): Poisson arrivals of aggressive
   IOC orders with a momentum bias from recent trade directions
   (`0.5 + 0.08 * bias`, bias clamped ±4).
@@ -16,7 +16,7 @@ The `MarketSim` bot population is the exogenous flow process:
   0 = off): this is the clustering parameter in the flagship study.
   Two coupled mechanisms, both armed by the same k:
   1. *intensity memory*: each executed trade shortens the NEXT taker
-     inter-arrival by factor 1/(1-k) (one-shot boost; no extra RNG draw);
+     inter-arrival by factor (1-k) (one-shot boost; no extra RNG draw);
   2. *sign persistence*: a taker follows the previous taker's side with
      probability k.
   k = 0 reproduces the historical memoryless process bit-for-bit (verified:
@@ -29,19 +29,20 @@ The `MarketSim` bot population is the exogenous flow process:
 
 | quantity | k=0 (Poisson null) | k=0.9 (clustered) |
 |---|---|---|
-| trades | 6,834 (22.8k/s) | 40,661 (135.5k/s) |
-| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.297 (runs emerge) |
-| trade inter-arrival burstiness (cv) | 1.72 (regime chain alone) | 3.17 |
+| trades | 6,834 (22.8k/s) | 38,015 (126.7k/s) |
+| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.346 (runs emerge) |
+| trade inter-arrival burstiness (cv) | 1.72 (regime chain alone) | 3.29 |
 | mid lag-1 autocorr @ trade times | ~0.0 | ~1.0 |
 
 Calibration facts (simulator properties, NOT claims of
 realism):
 
-* At k=0 the market alternates tick-for-tick: provider replenishment
+* In these default k=0 runs, the market alternates tick-for-tick: provider replenishment
   (60/ms) dominates taker pressure (8/ms), so sign runs never emerge and
   the momentum archetype never trades. This was the historical behavior.
-* Sign runs long enough to trigger the momentum strategy
-  (|sum of 8 signs| >= 3) only emerge for k >= ~0.85 (measured).
+* The retained clustered study uses k=0.9, which produces sign signals
+  that activate the momentum strategy under its recorded seeds. This is a
+  model choice, not a calibrated threshold.
 * k=0 still shows inter-arrival cv > 1, the calm/volatile regime chain is
   itself a clustering mechanism (rate persistence over 4ms dwell times).
   The Poisson-null claim is about the TAKER PROCESS given the regime, not

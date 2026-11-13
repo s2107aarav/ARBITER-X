@@ -5,15 +5,11 @@
 // samples are autocorrelated. IID t-tests on overlapping/tick-consecutive
 // samples OVERSTATE significance. This library therefore provides:
 //   * HAC (Newey-West) standard errors for mean estimates,
-//   * non-overlapping-subsample estimators,
+//   * chronological splits with non-overlapping test blocks,
 // and callers may report both the naive IID interval and the robust one so
 // the dependence discount is visible. Multiple testing: Holm, Bonferroni,
 // and BH-FDR.
 //
-// (Pruned 2026-09-09: block-bootstrap / Wilson hit-rate / calibration-bucket
-// / z-pvalue helpers were dead code, no experiment or test called them;
-// the methodology docs previously overstated their use.)
-
 #include "arbiter/types.hpp"
 
 #include <cstddef>

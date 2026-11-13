@@ -99,22 +99,22 @@ struct RunStats {
     // populations are a subset of the authoritative fill counts. Trace state
     // is cleaned up at exchange terminal time, so lost terminal reports do
     // not leak per-order tables.
-    Histogram fill_latency;
+    Histogram fill_latency{};
     // stage decomposition of decision->fill (ns), measured per completed
     // fill (taker and maker roles both recorded):
     //   decision->depart  (strategy reaction + frame encode)
-    //   depart->gateway    (order channel transit incl. algo latency)
-    //   gateway->match     (exchange processing)
-    //   match->publish     (fill frame encode + exec channel transit)
+    //   depart->gateway    (order channel transit)
+    //   gateway->match     (exchange processing and any resting time)
+    //   match->fill        (publication and exec channel transit)
     // The sum of the four equals fill_latency for the same fill. EVERY fill
     // of a traced order is recorded (partial maker fills included) until the
     // order reaches a terminal state (fully filled / cancel-confirmed /
     // rejected / IOC remainder), so the per-stage sums are over the SAME
     // fill set as fill_latency.
-    Histogram stage_decision_to_depart;
-    Histogram stage_depart_to_gateway;
-    Histogram stage_gateway_to_match;
-    Histogram stage_match_to_fill;
+    Histogram stage_decision_to_depart{};
+    Histogram stage_depart_to_gateway{};
+    Histogram stage_gateway_to_match{};
+    Histogram stage_match_to_fill{};
     // exact integer sums backing the histograms (verification: the four stage
     // sums must add up to the decision->fill sum for the same set of fills)
     u64 stage_sum_decision_to_depart = 0;
@@ -128,10 +128,10 @@ struct RunStats {
     // Separate histograms per strategy archetype (MM = maker-style exposure,
     // momentum = taker-style exposure), the two have structurally different
     // adverse-selection profiles and must never be pooled.
-    Histogram adverse_100us;
-    Histogram adverse_10ms;
-    Histogram mom_adverse_100us;
-    Histogram mom_adverse_10ms;
+    Histogram adverse_100us{};
+    Histogram adverse_10ms{};
+    Histogram mom_adverse_100us{};
+    Histogram mom_adverse_10ms{};
 
     // state-hash timeline for divergence detection: (every hash_every events)
     u64 hash_every = 256;

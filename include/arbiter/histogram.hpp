@@ -20,14 +20,14 @@ public:
     // ExperimentResult vectors doubled that) for no statistical benefit.
     explicit Histogram(size_t reservoir_cap = 1u << 16);
 
-    void record(double v) noexcept;   // v is expected >= 0; no filtering
+    void record(double v);   // finite observations; signed values are supported
     void reserve(size_t n);
     size_t count() const noexcept { return count_; }
     double min() const noexcept { return min_; }
     double max() const noexcept { return max_; }
     double mean() const noexcept { return count_ == 0 ? 0.0 : sum_ / static_cast<double>(count_); }
 
-    // p in [0,1]; 0 for empty histogram. Sorts the reservoir on demand.
+    // p in [0,1]; 0 for an empty reservoir. Sorts a cached copy on demand.
     double percentile(double p) const;
 
     struct Summary {
@@ -42,12 +42,9 @@ public:
     void reset() noexcept;
 
 private:
-    // samples_/sorted_ carry a lazy-sort cache: percentile() may sort them,
-    // which does not change any OBSERVED value (order of the reservoir is
-    // not part of the recorded statistics). const-correct reporting code
-    // never needs const_cast on RunStats. reservoir sampling order is
-    // deterministic regardless (rng_state_ is seeded per-Histogram).
-    mutable std::vector<double> samples_;
+    // Keep sampling slots stable when queries sort the percentile cache.
+    std::vector<double> samples_;
+    mutable std::vector<double> sorted_samples_;
     size_t capacity_;
     size_t count_ = 0;   // total records seen
     u64 rng_state_ = 0x853c49e6748fea9bull;

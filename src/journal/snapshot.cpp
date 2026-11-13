@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <dirent.h>
@@ -34,14 +36,14 @@ void encode_ladder_side(ByteWriter& w, const std::vector<LadderLevel>& levels) {
 
 bool decode_ladder_side(ByteReader& r, std::vector<LadderLevel>& out) {
     const u64 n = r.get_u64();
-    if (!r.ok() || n > (1u << 20)) return false;
+    if (!r.ok() || n > (1u << 20) || n > r.remaining() / 24) return false;
     out.reserve(static_cast<size_t>(n));
     for (u64 i = 0; i < n; ++i) {
         LadderLevel lvl;
         lvl.price = r.get_i64();
         lvl.total_qty = r.get_u64();
         const u64 orders = r.get_u64();
-        if (!r.ok() || orders > (1u << 24)) return false;
+        if (!r.ok() || orders > (1u << 24) || orders > r.remaining() / 24) return false;
         lvl.orders.reserve(static_cast<size_t>(orders));
         for (u64 j = 0; j < orders; ++j) {
             LadderOrder o;
@@ -60,6 +62,15 @@ void ensure_dir(const std::string& dir) {
     ::mkdir(dir.c_str(), 0755);  // ok if exists
 }
 
+bool checkpoint_seq(std::string_view name, u64& seq) {
+    if (!name.starts_with("ck_") || !name.ends_with(".snap") || name.size() < 9)
+        return false;
+    const std::string_view digits = name.substr(3, name.size() - 8);
+    if (digits.size() > 1 && digits.front() == '0') return false;
+    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), seq);
+    return parsed.ec == std::errc{} && parsed.ptr == digits.data() + digits.size();
+}
+
 }  // namespace
 
 Status write_snapshot(const std::string& path, const SnapshotData& snap) {
@@ -71,6 +82,7 @@ Status write_snapshot(const std::string& path, const SnapshotData& snap) {
     body.put_u64(snap.next_book_seq);
     encode_ladder_side(body, snap.ladder.bids);
     encode_ladder_side(body, snap.ladder.asks);
+    if (body.size() > std::numeric_limits<u32>::max()) return fail(Errc::Capacity, body.size());
 
     ByteWriter head;
     head.put_bytes(kMagic, 4);
@@ -95,8 +107,13 @@ Result<SnapshotData> read_snapshot(const std::string& path) {
     std::string all;
     char buf[8192];
     size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) all.append(buf, n);
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
+        all.append(buf, n);
+        if (n < sizeof buf || std::ferror(f) || std::feof(f)) break;
+    }
+    const bool read_error = std::ferror(f) != 0;
     std::fclose(f);
+    if (read_error) return ErrT<SnapshotData>(Errc::IoError);
 
     if (all.size() < kHeaderSize) return ErrT<SnapshotData>(Errc::SnapshotInvalid, 0);
     const u8* p = reinterpret_cast<const u8*>(all.data());
@@ -135,8 +152,8 @@ Status CheckpointStore::save(const SnapshotData& snap) {
     if (DIR* d = ::opendir(dir_.c_str())) {
         while (struct dirent* de = ::readdir(d)) {
             std::string name = de->d_name;
-            if (name.rfind("ck_", 0) == 0 && name.size() > 9 && name.substr(name.size() - 5) == ".snap") {
-                u64 v = std::strtoull(name.c_str() + 3, nullptr, 10);
+            u64 v = 0;
+            if (checkpoint_seq(name, v)) {
                 seqs.push_back(v);
             }
         }
@@ -156,8 +173,8 @@ std::vector<u64> CheckpointStore::available_seqs() const {
     if (DIR* d = ::opendir(dir_.c_str())) {
         while (struct dirent* de = ::readdir(d)) {
             std::string name = de->d_name;
-            if (name.rfind("ck_", 0) == 0 && name.size() > 9 && name.substr(name.size() - 5) == ".snap") {
-                u64 v = std::strtoull(name.c_str() + 3, nullptr, 10);
+            u64 v = 0;
+            if (checkpoint_seq(name, v)) {
                 seqs.push_back(v);
             }
         }

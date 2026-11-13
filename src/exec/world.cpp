@@ -66,7 +66,8 @@ World::World(const WorldConfig& cfg, u64 master_seed)
 World::~World() = default;
 
 void World::schedule_seed_events() {
-    schedule(sim_.next_action_time(), RankSim, EvSimAction);
+    if (sim_.next_action_time() != std::numeric_limits<LogicalNs>::max())
+        schedule(sim_.next_action_time(), RankSim, EvSimAction);
     schedule(add_time_checked(cfg_.warmup_ns, cfg_.mm.requote_interval_ns), RankIntent,
              EvIntentDue, 0, 0, 0);
     schedule(add_time_checked(cfg_.warmup_ns, cfg_.momentum.cooldown_ns), RankIntent,
@@ -102,10 +103,10 @@ RunStats World::run(u64 max_additional_events) {
     while (!queue_.empty() && !halted_) {
         if (events_ >= cfg_.max_events) break;
         if (processed_here >= max_additional_events) break;
+        if (queue_.top().t > cfg_.horizon_ns) break;
         ++processed_here;
         WorldEvent ev = queue_.top();
         queue_.pop();
-        if (ev.t > cfg_.horizon_ns) break;
         now_ = ev.t;
         process(ev);
         ++events_;
@@ -169,9 +170,8 @@ void World::process(const WorldEvent& ev) {
             sim_.advance(now_);
             if (cfg_.bots_observe_shadow) {
                 // Interference control: bots see the touch EXCLUDING strategy
-                // orders, their quoting input is then exogenous to the
-                // strategies, so strategy-side counterfactuals cannot feed
-                // back into bot behavior (docs/COUNTERFACTUALS.md).
+                // orders. Matching and trade feedback remain active
+                // (docs/COUNTERFACTUALS.md).
                 sim_.observe_shadow(shadow_best_bid(), shadow_best_ask());
             } else {
                 sim_.observe(book_.best_bid(), book_.best_ask());
@@ -188,7 +188,8 @@ void World::process(const WorldEvent& ev) {
                 case BotAction::Kind::None:
                     break;
             }
-            schedule(sim_.next_action_time(), RankSim, EvSimAction);
+            if (sim_.next_action_time() != std::numeric_limits<LogicalNs>::max())
+                schedule(sim_.next_action_time(), RankSim, EvSimAction);
             break;
         }
         case static_cast<u16>(EvMdDeliver):
@@ -331,7 +332,7 @@ void World::process(const WorldEvent& ev) {
                 f.taker_account = x.taker_acct;
                 f.price = x.price;
                 f.qty = x.qty;
-                f.t = now_;
+                f.t = n.fill.t;
                 f.taker_side = x.taker_side;
                 f.maker_side = x.maker_side;
                 resolve_open_fill_reports(f);
@@ -703,7 +704,7 @@ void World::gap_recover() {
         // (the ladder payload is consumed directly via the snapshot path,
         // the wire-frame ladder encoding is future work, documented in
         // docs/NETWORK_MODEL.md)
-        mm_.rebuild_view(book_ladder_without_own());
+        mm_.rebuild_view(book_.to_ladder());
         expected_md_seq_ = md_seq_;
         for (auto it = pending_md_.begin(); it != pending_md_.end();) {
             if (it->first < expected_md_seq_)
@@ -740,23 +741,6 @@ void World::gap_recover() {
             ++stats_.md_recovered;
         }
     }
-}
-
-// The snapshot payload omits the strategy's own orders; the feed handler
-// rebuilds a view of everyone else.
-LadderView World::book_ladder_without_own() const {
-    LadderView lv = book_.to_ladder();
-    auto strip = [&](std::vector<LadderLevel>& levels) {
-        for (LadderLevel& lvl : levels) {
-            std::vector<LadderOrder> keep;
-            for (LadderOrder& o : lvl.orders)
-                if (gateway_known_ids_.count(o.id) == 0) keep.push_back(o);
-            lvl.orders = std::move(keep);
-        }
-    };
-    strip(lv.bids);
-    strip(lv.asks);
-    return lv;
 }
 
 // ---- interference-control shadow touch ----
@@ -797,10 +781,8 @@ void World::deliver_fill(const Fill& f, LogicalNs t) {
             mom_.on_fee(cfg_.fee_per_lot * static_cast<i64>(qty));
         }
     };
-    if (f.taker_account == cfg_.mm.account || f.maker_account == cfg_.mm.account)
-        charge_fee(cfg_.mm.account, f.qty);
-    if (f.taker_account == cfg_.momentum.account || f.maker_account == cfg_.momentum.account)
-        charge_fee(cfg_.momentum.account, f.qty);
+    charge_fee(f.taker_account, f.qty);
+    charge_fee(f.maker_account, f.qty);
 
     const auto note_latency = [&](u64 order_id) {
         auto it = order_sent_t_.find(order_id);
@@ -811,9 +793,10 @@ void World::deliver_fill(const Fill& f, LogicalNs t) {
             stats_.fill_latency.record(static_cast<double>(t - it->second));
             stats_.fill_latency_sum += static_cast<u64>(t - it->second);
             const Order* resting = book_.find(order_id);
-            if (!resting || resting->leaves == 0) order_sent_t_.erase(it);
+            if ((!resting || resting->leaves == 0) && !open_fill_reports_.contains(order_id))
+                order_sent_t_.erase(it);
         }
-        note_stage_trace(order_id, t);
+        note_stage_trace(order_id, f.t, t);
     };
     // drawdown tracking: mark the MM's PnL to the book mid at every fill
     // delivery it participates in (peak-to-trough, integer ticks*qty).
@@ -847,19 +830,21 @@ void World::deliver_fill(const Fill& f, LogicalNs t) {
     if (f.taker_account == cfg_.mm.account) {
         mm_.on_fill(f.taker_order_id, f.taker_side, f.price, f.qty);
         note_latency(f.taker_order_id);
-        note_drawdown();
         schedule_markouts(cfg_.mm.account, f.taker_side, f.price);
-    } else if (f.maker_account == cfg_.mm.account) {
+    }
+    if (f.maker_account == cfg_.mm.account) {
         mm_.on_fill(f.maker_order_id, f.maker_side, f.price, f.qty);
         note_latency(f.maker_order_id);
-        note_drawdown();
         schedule_markouts(cfg_.mm.account, f.maker_side, f.price);
     }
+    if (f.taker_account == cfg_.mm.account || f.maker_account == cfg_.mm.account)
+        note_drawdown();
     if (f.taker_account == cfg_.momentum.account) {
         mom_.on_fill(f.taker_order_id, f.taker_side, f.price, f.qty);
         note_latency(f.taker_order_id);
         schedule_markouts(cfg_.momentum.account, f.taker_side, f.price);
-    } else if (f.maker_account == cfg_.momentum.account) {
+    }
+    if (f.maker_account == cfg_.momentum.account) {
         mom_.on_fill(f.maker_order_id, f.maker_side, f.price, f.qty);
         note_latency(f.maker_order_id);
         schedule_markouts(cfg_.momentum.account, f.maker_side, f.price);
@@ -1075,7 +1060,7 @@ void World::corrupt_frame(std::string& frame, Rng& rng) {
 
 // ---------------- stage tracing (decision -> fill decomposition) ----------------
 
-void World::note_stage_trace(u64 order_id, LogicalNs fill_t) {
+void World::note_stage_trace(u64 order_id, LogicalNs match_t, LogicalNs fill_t) {
     auto it = stages_.find(order_id);
     if (it == stages_.end()) return;
     const StageTimes& st = it->second;
@@ -1088,8 +1073,8 @@ void World::note_stage_trace(u64 order_id, LogicalNs fill_t) {
     // across partial fills; each fill still sums exactly).
     const u64 d1 = static_cast<u64>(st.depart - st.decision);
     const u64 d2 = static_cast<u64>(st.gateway - st.depart);
-    const u64 d3 = static_cast<u64>(st.match - st.gateway);
-    const u64 d4 = static_cast<u64>(fill_t - st.match);
+    const u64 d3 = static_cast<u64>(match_t - st.gateway);
+    const u64 d4 = static_cast<u64>(fill_t - match_t);
     stats_.stage_decision_to_depart.record(static_cast<double>(d1));
     stats_.stage_depart_to_gateway.record(static_cast<double>(d2));
     stats_.stage_gateway_to_match.record(static_cast<double>(d3));
@@ -1104,7 +1089,8 @@ void World::note_stage_trace(u64 order_id, LogicalNs fill_t) {
     // Terminal state: the order is fully consumed (or never rested). A
     // partially-filled resting order keeps its trace for the next fill.
     const Order* resting = book_.find(order_id);
-    if (!resting || resting->leaves == 0) stages_.erase(it);
+    if ((!resting || resting->leaves == 0) && !open_fill_reports_.contains(order_id))
+        stages_.erase(it);
 }
 
 void World::drop_stage_trace(u64 order_id) {
