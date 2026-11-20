@@ -171,7 +171,7 @@ The model's accuracy is measured against live runs, which compare inferred
 fills vs real fills. The metric reports, in the same unit (lots):
 
 * `mm_inference_fill_qty`, the point estimate,
-* `mm_real_filled_qty`, the exchange-authoritative truth,
+* `mm_auth_filled_qty`, all matched lots, and `mm_real_filled_qty`, the lots reported to the strategy,
 * `mm_ambiguous_fill_qty`, trade quantity that arrived while our own
   orders at that level were still UNCONFIRMED (own MdNew in flight). The
   model structurally cannot attribute those trades from its information

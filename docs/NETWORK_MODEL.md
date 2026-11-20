@@ -6,7 +6,7 @@ physical medium. It makes no claim of fidelity to any specific venue.
 
 ## Channels
 
-| channel | id | carries | faults modeled |
+| channel (id) | direction | carries | faults modeled |
 |---|---|---|---|
 | md (1) | exchange → strategies | CRC-framed MdNew/MdCancel/MdTrade | delay, jitter, loss, dup, reorder, burst loss, corruption |
 | order (2) | strategies → gateway | CRC-framed order/cancel | delay, jitter, loss, dup, reorder, burst loss, corruption |

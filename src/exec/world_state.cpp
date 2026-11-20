@@ -51,9 +51,7 @@ u64 World::state_hash() const {
     canonical_book_hash(book_.to_ladder(), h);
     // Order-account ownership routes fills/cancels: identity matters.
     {
-        auto accts = book_.order_accounts();
-        std::sort(accts.begin(), accts.end(),
-                  [](const auto& x, const auto& y) { return x.first < y.first; });
+        const auto accts = book_.order_accounts();
         h.tag("ACCT");
         h.u64v(accts.size());
         for (const auto& [id, acct] : accts) {
@@ -279,11 +277,11 @@ const std::vector<T>& pq_underlying(const std::priority_queue<T, std::vector<T>,
 // In-flight wire frames that fail to DECODE are legitimate (in-transit
 // corruption is real state); a frame that DOES decode must agree with its
 // stored channel/sequence/flags metadata.
-Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cfg) {
+Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cfg, size_t ring_capacity) {
     auto bad = [](u64 ctx) { return fail(Errc::SnapshotInvalid, ctx); };
 
     // scalar stream sanity
-    if (s.now < 0 || s.expected_md_seq > s.md_seq || s.gap_pending > 1 || s.halted > 1 ||
+    if (s.now < 0 || !s.expected_md_seq || s.expected_md_seq > s.md_seq || s.gap_pending > 1 || s.halted > 1 ||
         s.started > 1)
         return bad(45);
     if (!s.started && (s.events != 0 || s.tiebreak != 0 || s.now != 0 || !s.queue.empty()))
@@ -331,12 +329,17 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
     }
     if (s.next_book_seq <= resting.size()) return bad(42);
 
+    if (s.md_buffer.size() != std::min<u64>(s.md_seq - 1, ring_capacity)) return bad(43);
+    u64 ring_seq = s.md_seq - s.md_buffer.size();
+    for (const auto& entry : s.md_buffer)
+        if (entry.first != ring_seq++) return bad(43);
+
     // ---- MD packet attempts: unique ids below the counter ----
     {
         std::vector<u64> pids;
         pids.reserve(s.md_packets.size());
         for (const auto& p : s.md_packets) {
-            if (p.packet_id >= s.md_packet_seq) return bad(43);
+            if (!p.md_seq || p.md_seq >= s.md_seq || p.packet_id >= s.md_packet_seq) return bad(43);
             pids.push_back(p.packet_id);
             // When the (possibly corrupted) frame still decodes, its channel
             // and embedded sequence must agree with the packet metadata.
@@ -354,9 +357,9 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         auto seqs_ok = [&](const std::vector<u64>& v, u64 counter) {
             if (!std::is_sorted(v.begin(), v.end())) return false;  // stored sorted
             if (std::adjacent_find(v.begin(), v.end()) != v.end()) return false;
-            return v.empty() || v.back() <= counter;
+            return v.empty() || (v.front() > 0 && v.back() <= counter);
         };
-        if (!seqs_ok(s.order_rx_seqs, s.order_seq)) return bad(44);
+        if (!seqs_ok(s.gateway_known_ids, DomainBounds::kMaxOrderId) || !seqs_ok(s.order_rx_seqs, s.order_seq)) return bad(44);
         if (!seqs_ok(s.exec_rx_seqs, s.exec_seq)) return bad(44);
     }
 
@@ -380,8 +383,13 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         if (m.ord.id == 0 || m.ord.id > DomainBounds::kMaxOrderId) return bad(46);
         if (m.is_cancel > 1 || m.delivered > 1) return bad(46);
         auto d = wire_decode(reinterpret_cast<const u8*>(m.frame.data()), m.frame.size());
-        if (d && (d.value.channel != 2 || d.value.md_seq != m.transport_seq ||
-                  (d.value.flags & (kFlagSnapshot | kFlagExecReport)) != 0))
+        if (d && (d.value.channel != 2 || d.value.md_seq != m.transport_seq || d.value.flags != kFlagNone ||
+                  d.value.ev.type != (m.is_cancel ? EvType::BookCancel : EvType::BookAdd) ||
+                  d.value.ev.a != m.ord.id || d.value.ev.account != m.ord.account ||
+                  (!m.is_cancel && (d.value.ev.b != static_cast<u64>(m.ord.expiry) ||
+                    d.value.ev.p != m.ord.price || d.value.ev.c != m.ord.qty ||
+                    static_cast<u8>(d.value.ev.side) != m.ord.side ||
+                    static_cast<u8>(d.value.ev.otype) != m.ord.otype || static_cast<u8>(d.value.ev.tif) != m.ord.tif))))
             return bad(46);
     }
 
@@ -416,8 +424,12 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
             if (f.qty != 0 || f.price != 0) return bad(47);
         }
         auto d = wire_decode(reinterpret_cast<const u8*>(n.frame.data()), n.frame.size());
-        if (d && (d.value.channel != 3 || d.value.md_seq != n.transport_seq ||
-                  (d.value.flags & kFlagExecReport) == 0))
+        const auto& x = d.value.exec;
+        if (d && (d.value.channel != 3 || d.value.md_seq != n.transport_seq || d.value.flags != kFlagExecReport ||
+                  x.kind != n.kind || x.taker_id != f.taker_id || x.maker_id != f.maker_id ||
+                  x.taker_acct != f.taker_acct || x.maker_acct != f.maker_acct || x.price != f.price ||
+                  x.qty != f.qty || static_cast<u8>(x.taker_side) != f.taker_side ||
+                  static_cast<u8>(x.maker_side) != f.maker_side || (n.kind == 1 && x.reason != f.maker_id)))
             return bad(47);
     }
 
@@ -525,7 +537,7 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         if (const Status inv = check_book_invariants(s.mm.view); !inv) return bad(52);
         auto check_view = [&](const std::vector<LadderLevel>& lv) -> Status {
             for (const auto& lvl : lv)
-                if (lvl.price <= 0) return bad(52);
+                if (lvl.price > 100'000) return bad(52);
             return good();
         };
         if (const Status st = check_view(s.mm.view.bids); !st) return st;
@@ -541,10 +553,13 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
 
     // ---- sim state ----
     {
-        if (s.sim.next_provider_t < 0 || s.sim.next_taker_t < 0) return bad(54);
+        if (s.sim.now < 0 || s.sim.now > s.now || s.sim.bias < -4 || s.sim.bias > 4 ||
+            s.sim.next_provider_t < 0 || s.sim.next_taker_t < 0) return bad(54);
         if (s.sim.regime != 0 && s.sim.regime != 1) return bad(54);
-        if (s.sim.last_taker_side > 2) return bad(54);
-        if (s.sim.last_trade_px < 0 || s.sim.last_bb < 0 || s.sim.last_ba < 0) return bad(54);
+        if (s.sim.next_bot_id < MarketSim::kFirstOrderId || s.sim.last_taker_side > 2) return bad(54);
+        if (s.sim.last_trade_px < 0 || s.sim.last_trade_px > DomainBounds::kMaxPrice ||
+            s.sim.last_bb < 0 || s.sim.last_bb > DomainBounds::kMaxPrice ||
+            s.sim.last_ba < 0 || s.sim.last_ba > DomainBounds::kMaxPrice + 1) return bad(54);
         std::vector<u64> ids = s.sim.live_provider_orders;
         for (u64 id : ids)
             if (id == 0) return bad(54);
@@ -572,8 +587,6 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
             if (m.side > 1 || m.account == 0 || m.fill_t < 0 || m.fill_t > s.now || m.fill_px <= 0)
                 return bad(48);
         }
-        for (u64 id : s.gateway_known_ids)
-            if (id == 0) return bad(48);
     }
     return good();
 }
@@ -729,6 +742,7 @@ WorldSnapshot World::capture_snapshot() const {
 
 Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& continuation_cfg,
                                bool strict_config) {
+    if (journal_) return fail(Errc::InvalidArgument);  // an active journal belongs to its current run
     if (s.format_version != kWorldSnapshotVersion) return fail(Errc::Unsupported, s.format_version);
     if (strict_config && s.config_hash != continuation_cfg.hash())
         return fail(Errc::SnapshotInvalid, 1);
@@ -737,7 +751,7 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
     // Reject semantically impossible state before rebuilding. Later rebuild or
     // final hash verification can still fail after mutation: restore into a
     // fresh World and discard it on any failure.
-    if (const Status st = validate_snapshot_semantics(s, continuation_cfg); !st) return st;
+    if (const Status st = validate_snapshot_semantics(s, continuation_cfg, kMdBufferCap); !st) return st;
 
     now_ = s.now;
     events_ = s.events;
@@ -885,6 +899,7 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
     for (const auto& [id, n] : s.open_fill_reports) open_fill_reports_[id] = n;
     stages_.clear();  // in-flight stage traces die with their orders
 
+    stats_ = RunStats{};
     stats_.trades = s.stats.trades;
     stats_.volume = s.stats.volume;
     stats_.bot_fills = s.stats.bot_fills;
@@ -896,8 +911,7 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
     stats_.order_frames_duplicated = s.stats.order_frames_duplicated;
     stats_.exec_frames_dropped = s.stats.exec_frames_dropped;
     stats_.exec_frames_duplicated = s.stats.exec_frames_duplicated;
-    stats_.risk_accepted = s.stats.risk_accepted;
-    stats_.risk_rejected = s.stats.risk_rejected;
+    refresh_stats();
     stats_.md_published = s.stats.md_published;
     stats_.md_delivered = s.stats.md_delivered;
     stats_.md_dropped = s.stats.md_dropped;
@@ -914,7 +928,7 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
 
     // self-validation: a complete snapshot must reproduce the captured hash
     if (const u64 h = state_hash(); h != s.state_hash) return fail(Errc::SnapshotInvalid, h);
-    return good();
+    return open_journal(true);  // a continuation may only create a new journal
 }
 
 }  // namespace arbiter

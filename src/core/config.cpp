@@ -14,9 +14,8 @@ namespace arbiter {
 namespace {
 
 std::string_view trim(std::string_view s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r')) s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.remove_suffix(1);
-    return s;
+    const auto start = s.find_first_not_of(" \t\r\v\f");
+    return start == s.npos ? std::string_view{} : s.substr(start, s.find_last_not_of(" \t\r\v\f") - start + 1);
 }
 
 }  // namespace
@@ -98,11 +97,11 @@ Result<Config> Config::from_file(const std::string& path) {
     return OkT(std::move(cfg));
 }
 
-bool Config::has(std::string_view dotted) const noexcept {
+bool Config::has(std::string_view dotted) const {
     return index_.count(std::string(dotted)) != 0;
 }
 
-bool Config::get_bool(std::string_view dotted, bool dflt) const noexcept {
+bool Config::get_bool(std::string_view dotted, bool dflt) const {
     auto it = index_.find(std::string(dotted));
     if (it == index_.end()) return dflt;
     std::string_view v = it->second;
@@ -111,7 +110,7 @@ bool Config::get_bool(std::string_view dotted, bool dflt) const noexcept {
     return dflt;
 }
 
-i64 Config::get_i64(std::string_view dotted, i64 dflt) const noexcept {
+i64 Config::get_i64(std::string_view dotted, i64 dflt) const {
     auto it = index_.find(std::string(dotted));
     if (it == index_.end()) return dflt;
     if (it->second.empty()) return dflt;
@@ -122,7 +121,7 @@ i64 Config::get_i64(std::string_view dotted, i64 dflt) const noexcept {
     return static_cast<i64>(v);
 }
 
-u64 Config::get_u64(std::string_view dotted, u64 dflt) const noexcept {
+u64 Config::get_u64(std::string_view dotted, u64 dflt) const {
     auto it = index_.find(std::string(dotted));
     if (it == index_.end()) return dflt;
     if (it->second.empty() || it->second.front() == '-') return dflt;
@@ -133,7 +132,7 @@ u64 Config::get_u64(std::string_view dotted, u64 dflt) const noexcept {
     return static_cast<u64>(v);
 }
 
-double Config::get_f64(std::string_view dotted, double dflt) const noexcept {
+double Config::get_f64(std::string_view dotted, double dflt) const {
     auto it = index_.find(std::string(dotted));
     if (it == index_.end()) return dflt;
     if (it->second.empty()) return dflt;
@@ -145,7 +144,7 @@ double Config::get_f64(std::string_view dotted, double dflt) const noexcept {
     return v;
 }
 
-std::string Config::get_str(std::string_view dotted, std::string dflt) const noexcept {
+std::string Config::get_str(std::string_view dotted, std::string dflt) const {
     auto it = index_.find(std::string(dotted));
     if (it == index_.end()) return dflt;
     return it->second;

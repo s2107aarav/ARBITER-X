@@ -8,8 +8,7 @@
 - **Reproduce**: `arbiter flagship --reproduce <dir>/results.json`
   (bit-for-bit when compiler and platform provenance match; all per-seed state
   hashes + economics).
-- **Date**: 2026-11-12 (regenerated after correcting self-trade accounting;
-  simulated outcomes are read from the authoritative artifacts).
+- **Date**: 2026-11-20. The runner regenerated all three records after corrections to partial fills, FIFO queue estimates, and quote sizing.
 
 ## Question
 
@@ -38,7 +37,7 @@ H0: only the total matters. H1: placement matters.
 
 ## Results (clustered, reactive, the flagship run)
 
-* **Poisson null (k=0)**: every cell has identical mean economics (MM PnL 168.8, 171.9
+* **Poisson null (k=0)**: every cell has identical mean economics (MM PnL 168.8, 168.8
   lots, all contrasts exactly 0, p=1): allocation has no effect under this
   null market. INTERPRETATION SCOPE: the regime contrast varies the taker
   process's dependence structure AND its realized intensity/sign structure
@@ -46,51 +45,26 @@ H0: only the total matters. H1: placement matters.
   is reached, so the null result is
   NECESSARY but not SUFFICIENT evidence for the clustered-flow mechanism;
   it does not isolate dependence from intensity.
-* **Clustered (k=0.9)**: cells move: MM PnL ranges -504663.8 to -223998.4
-  ticks*qty, filled lots 26389.8–37557.5, markout -2.60 to -0.75 ticks. The
-  primary contrast (extremes) has mean paired diff -122252.6 ticks*qty
-  (-4.00 per filled lot; MATERIAL by the predefined threshold) but the
-  Holm-corrected p-value is 0.1406: NOT statistically significant at 8
-  seeds. 7/8 seed-level contrasts are negative; the differences remain
-  heavy-tailed.
-* **Interference sensitivity (frozen vs reactive)**: under frozen observation the
-  clustered-regime point estimates shrink by an order of magnitude and the
-  primary contrast is not material. The reactive-world point estimate is
-  therefore observation-feedback-dependent, the central interpretation
-  must carry this caveat.
-* Adjacent contrasts alternate in sign, no monotone allocation surface at
-  this budget/regime; the grid does not support claims of an "optimal
-  allocation".
+* **Clustered, reactive (k=0.9).** Mean MM PnL across cells ranged from
+  −300,133.6 to −186,236.6 ticks×qty. Mean filled lots ranged from 31,932.0
+  to 40,351.3 and mean markouts from −1.93 to −0.81 ticks. Moving the full
+  budget from action to observation produced a mean paired difference of
+  +24,580.9 ticks×qty, or +0.73 per filled lot. Five of eight differences
+  were positive. The descriptive IID 95% interval was [−83,517.8, +132,679.6].
+  The raw permutation p-value was 0.6875 and the Holm-adjusted p-value was 1.0.
+* **Clustered, frozen.** The same contrast gave +5,060.0 ticks×qty, or
+  +0.16 per filled lot. All eight differences were positive. The raw
+  permutation p-value was 0.0078125 and the Holm-adjusted p-value was
+  0.0703125. Observation feedback changes the size of the point estimate.
+* Adjacent contrasts vary in sign. The grid does not establish an optimal
+  allocation.
 
 ## Verdict
 
-**UNCERTAIN / UNDERPOWERED.** H0 is NOT REJECTED at the primary contrast:
-the point estimate is economically large, but cross-seed variance swamps it
-(low power; report as uncertain; raw p=0.0156, Holm p=0.1406). The
-Poisson null shows exactly zero placement sensitivity, so the instrument is
-not dead, but the flagship data do not license a
-non-fungibility claim at L=8µs in this market. How to read it:
-
-1. The engine CAN express the allocation intervention exactly (verified).
-2. The Poisson null market produces exactly zero placement sensitivity
-   (necessary, not sufficient, for the clustered-flow mechanism, see the
-   regime-contrast scope under Results).
-3. Under clustered flow the point estimates move materially but are not
-   statistically separable from zero at this replication.
-
-## Kill conditions checked
-
-- (B) mechanism contradiction: NOT triggered in the narrow sense, no
-  effect under the Poisson null while the clustered regime moves. Caveat:
-  because the regimes also differ in intensity, a null-market effect being
-  absent cannot by itself confirm the dependence-structure mechanism.
-- (C) economic threshold: the point estimate is material and the unadjusted
-  IID interval excludes zero, while the Holm-corrected primary test remains
-  inconclusive. It is reported as uncertain.
-- (D) interference instability: PARTIAL, frozen-mode effects are ~10x
-  smaller; the reactive result is feedback-dependent (documented above).
-- (E) single-seed dependence: checked: 7/8 seed-level contrasts are negative;
-  the per-seed differences remain heavy-tailed.
+Both clustered point estimates fell below the prespecified threshold of
+1 tick×qty per filled lot. Neither primary contrast reached significance
+after Holm correction at 0.05. The reactive interval includes effects in
+both directions. These eight paired seeds leave the placement question open.
 
 ## Limitations
 
@@ -107,7 +81,7 @@ venue-imposed delay (Gao & Wang 2018; Lehalle & Mounjid 2016; Khapko &
 Zoican 2019; Kelly & Yudovina 2015); the fixed-total allocation
 decomposition was not found there. The contribution claimed is the
 question + the deterministic instrument, NOT a positive empirical finding
-(this experiment's verdict is UNCERTAIN/UNDERPOWERED).
+(the primary contrast is inconclusive).
 
 Eight seeds use 256 exact sign assignments. The configured 5000 repetitions
 apply to larger-sample Monte Carlo tests. Identical economic means do not

@@ -65,7 +65,7 @@ public:
     void on_md_cancel(u64 md_id);
     void on_md_trade(Price price, Qty qty);
     // Real fill delivered by the exchange (authoritative).
-    void on_fill(u64 order_id, Side side, Price price, Qty qty);
+    void on_fill(u64 order_id, Side side, Price price, Qty qty, Liquidity role = Liquidity::Taker);
     // Exchange fee charged on a fill (integer ticks*qty; reduces cash).
     void on_fee(i64 amount) noexcept;
     void on_cancel_confirmed(u64 order_id);

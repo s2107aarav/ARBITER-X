@@ -8,7 +8,7 @@ cmake --fresh -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DARBITER_WARNINGS
 cmake --build "$BUILD_DIR" --parallel "$JOBS"
 ctest --test-dir "$BUILD_DIR" --output-on-failure
 "$BUILD_DIR/arbiter" verify --seed 42 --ms 50
-"$BUILD_DIR/arbiter" fuzz --target differential --iters 3000
+"$BUILD_DIR/arbiter" fuzz --target differential --iters 200000
 "$BUILD_DIR/arbiter" fuzz --target protocol --iters 200000
 "$BUILD_DIR/arbiter" fuzz --target corpus
 "$BUILD_DIR/arbiter" simulate --seed 42 --ms 100 --out artifacts/repro_sim

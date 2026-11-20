@@ -188,7 +188,6 @@ int cmd_verify(int argc, char** argv) {
     std::printf("run2 hash: %llu (%llu events)\n", (unsigned long long)b.state_hash(),
                 (unsigned long long)sb.events_processed);
     std::printf("RESULT: %s\n", same ? "IDENTICAL" : "DIVERGED");
-    // also verify across the two book implementations via the journal path
     return same ? 0 : 1;
 }
 
@@ -362,7 +361,8 @@ int cmd_worldjump(int argc, char** argv) {
     const u64 jump_budget = events == 0 ? ~u64{0} : events;
     // v13 snapshots persist the complete generating configuration: continue
     // under the EXACT config that produced the snapshot (no defaults).
-    const WorldConfig cfg = snap.value.config;
+    WorldConfig cfg = snap.value.config;
+    cfg.journal_events = false;  // Continuations must never reopen the parent journal for writing.
     World w(cfg, seed);
     const Status st = w.restore_snapshot(snap.value, cfg, /*strict_config=*/true);
     if (!st) {
@@ -433,7 +433,8 @@ int cmd_worldfork(int argc, char** argv) {
     // and the fork differs by exactly the one requested variable. No
     // defaults are assumed for non-v13-capable state (the version check
     // rejects older snapshots loudly before this point).
-    const WorldConfig orig = snap.value.config;
+    WorldConfig orig = snap.value.config;
+    orig.journal_events = false;
     WorldConfig cfg = orig;
     // CLI aliases -> experiment override keys (docs/COUNTERFACTUALS.md)
     std::string full_key = key;
@@ -557,13 +558,11 @@ int cmd_simstats(int argc, char** argv) {
     }
     cfg.sim.taker_self_excitation = self_excitation;
     std::filesystem::create_directories("artifacts");
-    std::remove(cfg.journal_path.c_str());
     World w(cfg, seed);
     RunStats s = w.run();
 
     Histogram spread(1u << 20), rets(1u << 20);
     OptBook book{OptBook::Options{1, 100'000, 4096}};
-    std::vector<Fill> scratch;
     std::vector<double> mid_at_trade;  // mids at consecutive trades
     std::vector<LogicalNs> trade_times;  // for burstiness (inter-arrival cv)
     int last_sign = 0;
@@ -582,10 +581,8 @@ int cmd_simstats(int argc, char** argv) {
         if (e.type != EvType::MdNew && e.type != EvType::MdCancel && e.type != EvType::MdTrade)
             continue;
         if (e.type == EvType::MdNew) {
-            scratch.clear();
-            // duplicate MdNew ids are legal in the journal (gap-recovery
-            // re-sends); rest_order's Duplicate error makes this idempotent
-            (void)book.rest_order(Order{e.a, 0, e.side, OrderType::Limit, Tif::GTC, e.p, e.c, e.c, 0, 0, 0});
+            if (!book.rest_order(Order{e.a, 0, e.side, OrderType::Limit, Tif::GTC, e.p, e.c, e.c, 0, 0, 0}))
+                throw std::runtime_error("invalid published MdNew in simstats journal");
             ++md_seen;
         } else if (e.type == EvType::MdCancel) {
             book.cancel(e.a);
@@ -704,7 +701,7 @@ FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& n
         if (key == "latency.total_ns" || key == "experiment.horizon_ns" || key == "experiment.warmup_ns") {
             i64 value = 0;
             valid = parse_i64_arg(raw.c_str(), value);
-        } else if (key == "stats.permutation_reps") {
+        } else if (key == "stats.permutation_reps" || key == "stats.hac_lag") {
             u64 value = 0;
             valid = parse_u64_arg(raw.c_str(), value);
         } else if (key == "market.taker_self_excitation" || key == "stats.economic_threshold_per_lot") {
@@ -745,6 +742,7 @@ FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& n
     fc.economic_threshold_ticks_qty_per_lot =
         cfg.get_f64("stats.economic_threshold_per_lot", 1.0);
     fc.permutation_reps = cfg.get_u64("stats.permutation_reps", 5000);
+    fc.hac_lag = cfg.get_u64("stats.hac_lag", fc.hac_lag);
     // seeds: comma-separated in [experiment]
     fc.seeds.clear();
     const std::string seed_str = cfg.get_str("experiment.seeds", "2026,2027,2028,2029,2030,2031,2032,2033");
@@ -912,8 +910,9 @@ int cmd_fuzz(int argc, char** argv) {
     if (!std::strcmp(which, "differential")) {
         // adversarial op streams vs ref/opt books; every divergence is a bug
         u64 ops_total = 0, divergences = 0;
-        for (u64 seed = 1; seed <= 100; ++seed) {
-            auto ops = diff::random_ops(seed ^ 0xBEEF, static_cast<size_t>(2000 + iters % 3000));
+        const u64 seeds = std::min<u64>(iters, 100);
+        for (u64 seed = 1; seed <= seeds; ++seed) {
+            auto ops = diff::random_ops(seed ^ 0xBEEF, iters / seeds + (seed <= iters % seeds));
             ops_total += ops.size();
             diff::Report rep = diff::run_differential(ops);
             if (rep.diverged) {
@@ -922,8 +921,8 @@ int cmd_fuzz(int argc, char** argv) {
                             (unsigned long long)rep.div.op_index, rep.div.why.c_str());
             }
         }
-        std::printf("differential fuzz: %llu ops across 100 seeds, %llu divergences\n",
-                    (unsigned long long)ops_total, (unsigned long long)divergences);
+        std::printf("differential fuzz: %llu ops across %llu seeds, %llu divergences\n",
+                    (unsigned long long)ops_total, (unsigned long long)seeds, (unsigned long long)divergences);
         return divergences == 0 ? 0 : 1;
     }
     if (!std::strcmp(which, "adversarial")) {

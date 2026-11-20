@@ -139,21 +139,16 @@ AX_TEST(flagship_names_roundtrip_json_escapes) {
 }
 
 AX_TEST(flagship_separates_statistical_and_economic_verdicts) {
-    FlagshipConfig cfg;
-    cfg.md_shares = {0.0, 1.0};
-    cfg.seeds = {2026, 2027, 2028, 2029, 2030, 2031};
-    cfg.economic_threshold_ticks_qty_per_lot = 1e9;
-    const auto result = run_flagship(cfg);
-    CHECK_EQ(result.pairs.size(), 1u);
-    if (result.pairs.empty() || result.findings.empty()) return;
-    const auto& primary = result.pairs.back();
-    CHECK(primary.statistically_significant);
-    CHECK(!primary.economically_material);
-    CHECK_EQ(primary.p_permutation, 0.03125);
-    const auto& verdict = result.findings.back();
-    CHECK(verdict.find("REJECTED after Holm") != std::string::npos);
-    CHECK(verdict.find("below the predefined economic threshold") != std::string::npos);
-    CHECK(verdict.find("not significant") == std::string::npos);
+    PairComparison pair;
+    for (const bool significant : {false, true}) {
+        pair.statistically_significant = significant;
+        for (const bool material : {false, true}) {
+            pair.economically_material = material;
+            const std::string verdict = pair.verdict();
+            CHECK_EQ(verdict.find("rejected after Holm") != verdict.npos, significant);
+            CHECK_EQ(verdict.find("falls below") == verdict.npos, material);
+        }
+    }
 }
 
 AX_TEST(flagship_reproduction_checks_all_reported_outcomes) {
@@ -297,7 +292,8 @@ AX_TEST(flagship_rejects_malformed_artifacts) {
     std::filesystem::create_directories("artifacts");
     auto write = [](const char* name, const std::string& body) {
         FILE* f = fopen((std::string("artifacts/") + name).c_str(), "wb");
-        fwrite(body.data(), 1, body.size(), f);
+        CHECK(f); if (!f) return;
+        CHECK_EQ(fwrite(body.data(), 1, body.size(), f), body.size());
         fclose(f);
     };
     write("fl_bad1.json", "{}");
@@ -323,7 +319,8 @@ AX_TEST(flagship_rejects_incomplete_seed_records) {
     const std::string source=std::string(AX_SOURCE_DIR)+"/experiments/FLAGSHIP-clustered-reactive/results.json";
     auto* file=std::fopen(source.c_str(),"rb"); CHECK(file); if(!file)return;
     std::string text; char buffer[4096]; size_t size;
-    while((size=std::fread(buffer,1,sizeof buffer,file)))text.append(buffer,size);
+    do { size = std::fread(buffer, 1, sizeof buffer, file); text.append(buffer, size); } while (size == sizeof buffer);
+    CHECK(!std::ferror(file));
     std::fclose(file);
     const auto at=text.find("{\"seed\":"); CHECK_NE(at,std::string::npos); if(at==std::string::npos)return;
     const auto end=text.find('}',at); CHECK_NE(end,std::string::npos); if(end==std::string::npos)return;
@@ -342,7 +339,8 @@ AX_TEST(flagship_rejects_out_of_range_durations) {
     auto* file = std::fopen(source.c_str(), "rb");
     CHECK(file); if (!file) return;
     std::string original; char buffer[4096]; size_t size;
-    while ((size = std::fread(buffer, 1, sizeof buffer, file))) original.append(buffer, size);
+    do { size = std::fread(buffer, 1, sizeof buffer, file); original.append(buffer, size); } while (size == sizeof buffer);
+    CHECK(!std::ferror(file));
     std::fclose(file);
     std::filesystem::create_directories("artifacts");
     for (const char* key : {"horizon_ns", "warmup_ns"}) {

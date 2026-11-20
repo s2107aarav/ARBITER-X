@@ -14,8 +14,8 @@ void Histogram::record(double v) {
     if (!std::isfinite(v)) throw std::invalid_argument("histogram observation must be finite");
     if (count_ == 0 || v < min_) min_ = v;
     if (count_ == 0 || v > max_) max_ = v;
-    sum_ += v;
     ++count_;
+    mean_ = std::lerp(mean_, v, 1.0 / static_cast<double>(count_));
     sorted_ = false;
     if (samples_.size() < capacity_) {
         samples_.push_back(v);
@@ -48,7 +48,7 @@ double Histogram::percentile(double p) const {
     double frac = idx - lo;
     double a = sorted_samples_[static_cast<size_t>(lo)];
     double b = sorted_samples_[static_cast<size_t>(hi)];
-    return a + (b - a) * frac;
+    return std::lerp(a, b, frac);
 }
 
 Histogram::Summary Histogram::summarize() const {
@@ -71,7 +71,7 @@ void Histogram::reset() noexcept {
     samples_.clear();
     sorted_samples_.clear();
     count_ = 0;
-    sum_ = 0;
+    mean_ = 0;
     min_ = 0;
     max_ = 0;
     sorted_ = false;

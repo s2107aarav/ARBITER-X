@@ -7,6 +7,7 @@
 #include "arbiter/stats.hpp"
 #include "../core/json.hpp"
 
+#include <bit>
 #include <cmath>
 #include <cerrno>
 #include <cctype>
@@ -27,6 +28,7 @@ namespace {
 WorldConfig base_world_config(const FlagshipConfig& fc) {
     WorldConfig cfg;
     cfg.journal_events = false;
+    cfg.hash_every_events = 0;
     cfg.horizon_ns = fc.horizon_ns;
     cfg.warmup_ns = fc.warmup_ns;
     cfg.bots_observe_shadow = fc.bots_observe_shadow;
@@ -51,7 +53,7 @@ CellSeedOutcome run_one(const FlagshipConfig& fc, const LatencyAllocation& alloc
     o.mm_fills = s.strategy_fills;
     o.mm_filled_qty = s.mm_real_filled_qty;
     o.mom_fills = s.momentum_fills;
-    o.mom_filled_qty = s.mom_filled_qty;  // authoritative LOTS (measured)
+    o.mom_filled_qty = s.mom_filled_qty;  // delivered lots at the study horizon
     o.mm_orders_sent = s.strategy_orders_sent;
     o.mm_cancels_sent = s.strategy_cancels_sent;
     o.mm_orders_rejected = s.risk_rejected;
@@ -114,6 +116,14 @@ double permutation_pvalue(const std::vector<double>& d, u64 seed, size_t reps) {
 
 }  // namespace
 
+const char* PairComparison::verdict() const noexcept {
+    if (statistically_significant)
+        return economically_material ? "H0 rejected after Holm correction. The effect meets the materiality threshold."
+                                     : "H0 rejected after Holm correction. The effect falls below the materiality threshold.";
+    return economically_material ? "The primary contrast is inconclusive after Holm correction. The point estimate meets the materiality threshold."
+                                 : "The primary contrast is inconclusive after Holm correction. The point estimate falls below the materiality threshold.";
+}
+
 FlagshipResult run_flagship(const FlagshipConfig& fc) {
     if (fc.seeds.empty() || fc.md_shares.size() < 2 || fc.total_latency_ns < 0 ||
         fc.permutation_reps == 0 ||
@@ -121,8 +131,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         !std::isfinite(fc.taker_self_excitation) || fc.taker_self_excitation < 0.0 ||
         fc.taker_self_excitation >= 1.0 ||
         !std::isfinite(fc.economic_threshold_ticks_qty_per_lot) ||
-        fc.economic_threshold_ticks_qty_per_lot < 0.0 ||
-        fc.economic_threshold_ticks_qty_per_lot * 1e9 >= 18446744073709551616.0)
+        fc.economic_threshold_ticks_qty_per_lot < 0.0)
         throw std::invalid_argument("invalid flagship definition");
     if (std::set<u64>(fc.seeds.begin(), fc.seeds.end()).size() != fc.seeds.size())
         throw std::invalid_argument("duplicate flagship seeds");
@@ -148,25 +157,19 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
     // definition hash: everything that changes numbers
     {
         Hasher h;
-        h.tag("ARBITERX/FLAGSHIP/1");
-        for (char c : fc.name) h.u8v(static_cast<u8>(c));
+        h.tag("ARBITERX/FLAGSHIP/2");
+        h.str(fc.name);
         h.i64v(fc.total_latency_ns);
         h.u64v(fc.md_shares.size());
-        for (double x : fc.md_shares) {
-            char b[32];
-            std::snprintf(b, sizeof b, "%.17g", x);
-            h.str(b);
-        }
+        for (double x : fc.md_shares) h.u64v(std::bit_cast<u64>(x));
         h.u8v(static_cast<u8>(fc.flow_model));
-        char b[32];
-        std::snprintf(b, sizeof b, "%.17g", fc.taker_self_excitation);
-        h.str(b);
+        h.u64v(std::bit_cast<u64>(fc.taker_self_excitation));
         h.boolean(fc.bots_observe_shadow);
         h.u64v(fc.seeds.size());
         for (u64 s : fc.seeds) h.u64v(s);
         h.i64v(fc.horizon_ns);
         h.i64v(fc.warmup_ns);
-        h.u64v(static_cast<u64>(fc.economic_threshold_ticks_qty_per_lot * 1e9));
+        h.u64v(std::bit_cast<u64>(fc.economic_threshold_ticks_qty_per_lot));
         h.u64v(fc.permutation_reps);
         h.u64v(static_cast<u64>(fc.hac_lag));
         res.definition_hash = h.value();
@@ -234,7 +237,6 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         // using the two cells' average traded volume as the denominator)
         const double dq = res.cells[ib].mean_mm_filled_qty + res.cells[ia].mean_mm_filled_qty;
         p.pnl_diff_per_lot = dq > 0 ? (p.mean_diff / (dq / 2.0)) : 0.0;
-        p.statistically_significant = p.p_permutation < 0.05;
         p.economically_material =
             std::fabs(p.pnl_diff_per_lot) >= fc.economic_threshold_ticks_qty_per_lot;
         res.pairs.push_back(std::move(p));
@@ -303,26 +305,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
             res.findings.push_back(b);
         }
         // verdict against H0 for the primary contrast
-        const bool reject = prim.statistically_significant && prim.economically_material;
-        if (reject) {
-            std::snprintf(b, sizeof b,
-                          "H0 (total-only sufficiency) at the primary contrast: REJECTED "
-                          "(significant after Holm AND economically material)");
-        } else if (prim.statistically_significant) {
-            std::snprintf(b, sizeof b,
-                          "H0 at the primary contrast: REJECTED after Holm; effect is "
-                          "below the predefined economic threshold");
-        } else if (prim.economically_material && !prim.statistically_significant) {
-            std::snprintf(b, sizeof b,
-                          "H0 at the primary contrast: NOT REJECTED — point estimate is "
-                          "economically large but cross-seed variance swamps it (low power; "
-                          "report as uncertain, do NOT interpret the sign as an effect)");
-        } else {
-            std::snprintf(b, sizeof b,
-                          "H0 at the primary contrast: NOT REJECTED (placement effect small "
-                          "and not significant at this budget/regime — a valid negative result)");
-        }
-        res.findings.push_back(b);
+        res.findings.emplace_back(prim.verdict());
     }
     return res;
 }

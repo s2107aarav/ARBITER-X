@@ -189,15 +189,15 @@ std::string runstats_summary(const RunStats& s, const std::string& name) {
     }
     // queue-model accuracy: both sides in LOTS; ambiguity = the lots the
     // model cannot attribute (races with our own MdNew); the band is reported
-    if (s.mm_inference_fill_qty || s.mm_real_filled_qty) {
-        const double ratio = s.mm_real_filled_qty
+    if (s.mm_inference_fill_qty || s.mm_auth_filled_qty) {
+        const double ratio = s.mm_auth_filled_qty
                                  ? static_cast<double>(s.mm_inference_fill_qty) /
-                                       static_cast<double>(s.mm_real_filled_qty)
+                                       static_cast<double>(s.mm_auth_filled_qty)
                                  : 0.0;
         std::snprintf(buf, sizeof buf,
                       "  queue model: inferred %llu / real %llu lots (ratio %.2f; 1.0 = exact; ambiguous %llu)\n",
                       (unsigned long long)s.mm_inference_fill_qty,
-                      (unsigned long long)s.mm_real_filled_qty, ratio,
+                      (unsigned long long)s.mm_auth_filled_qty, ratio,
                       (unsigned long long)s.mm_ambiguous_fill_qty);
         out += buf;
     }

@@ -20,14 +20,14 @@ enum class EvType : u16 {
     BookCancel = 2,
     BookReplace = 3,
     // ---- matching outputs ----
-    TradePrint = 4,     // a fill; a= taker id, b= maker id, c= maker account, p= price, qty slot below
+    TradePrint = 4,     // a=taker id, b=maker id, c=qty, p=price, account=taker account
     // ---- market data feed (what strategies observe) ----
     MdNew = 5,          // a= md_id, side/p/qty
     MdCancel = 6,       // a= md_id
     MdTrade = 7,        // p= price, a= qty
     // ---- infrastructure ----
     TimerFire = 8,      // a= timer_id, b= kind (0=gtd expiry)
-    RiskDecision = 9,   // a= order_id, b= decision (1 accept, 2 reject), c= reason code
+    RiskDecision = 9,   // a= order_id, b= reason code, c= decision (2 reject)
     Fault = 10,         // a= fault kind, b= param
     Checkpoint = 11,    // a= event seq, b= canonical book hash (not World state)
     Session = 12,       // a= subtype (1 connect, 2 disconnect, 3 recovery start, 4 recovered)

@@ -8,42 +8,32 @@
 
 namespace arbiter {
 
+namespace {
+std::string encode_frame(u8 channel, u64 seq, u16 flags, const void* payload, size_t n) {
+    if ((n && !payload) || n > std::numeric_limits<u32>::max()) return {};
+    ByteWriter w;
+    w.put_u32(kFrameMagic);
+    w.put_u16(kFrameVersion);
+    w.put_u16(flags);
+    w.put_u64(seq);
+    w.put_u8(channel);
+    w.put_u8(0);
+    w.put_u16(0);
+    w.put_u32(static_cast<u32>(n));
+    w.put_u32(crc32(payload, n));
+    w.put_bytes(payload, n);
+    return w.take();
+}
+}  // namespace
+
 std::string wire_encode(u8 channel, u64 md_seq, u16 flags, const Event& ev) {
     ByteWriter payload;
     encode_event(payload, ev);
-    const std::string& pl = payload.data();
-    ByteWriter h;
-    h.put_u32(kFrameMagic);
-    h.put_u16(kFrameVersion);
-    h.put_u16(flags);
-    h.put_u64(md_seq);
-    h.put_u8(channel);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u32(static_cast<u32>(pl.size()));
-    h.put_u32(crc32(pl.data(), pl.size()));
-    std::string out = h.data();
-    out += pl;
-    return out;
+    return encode_frame(channel, md_seq, flags, payload.data().data(), payload.size());
 }
 
 std::string wire_encode_snapshot(u8 channel, u64 md_seq, const void* payload, size_t n) {
-    if ((n != 0 && payload == nullptr) || n > std::numeric_limits<u32>::max()) return {};
-    ByteWriter h;
-    h.put_u32(kFrameMagic);
-    h.put_u16(kFrameVersion);
-    h.put_u16(kFlagSnapshot);
-    h.put_u64(md_seq);
-    h.put_u8(channel);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u32(static_cast<u32>(n));
-    h.put_u32(crc32(payload, n));
-    std::string out = h.data();
-    if (n != 0) out.append(static_cast<const char*>(payload), n);
-    return out;
+    return encode_frame(channel, md_seq, kFlagSnapshot, payload, n);
 }
 
 std::string wire_encode_exec(u8 channel, u64 seq, const ExecReport& r) {
@@ -58,21 +48,7 @@ std::string wire_encode_exec(u8 channel, u64 seq, const ExecReport& r) {
     p.put_u64(r.qty);
     p.put_u8(static_cast<u8>(r.taker_side));
     p.put_u8(static_cast<u8>(r.maker_side));
-    const std::string& pl = p.data();
-    ByteWriter h;
-    h.put_u32(kFrameMagic);
-    h.put_u16(kFrameVersion);
-    h.put_u16(kFlagExecReport);
-    h.put_u64(seq);
-    h.put_u8(channel);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u8(0);
-    h.put_u32(static_cast<u32>(pl.size()));
-    h.put_u32(crc32(pl.data(), pl.size()));
-    std::string out = h.data();
-    out += pl;
-    return out;
+    return encode_frame(channel, seq, kFlagExecReport, p.data().data(), p.size());
 }
 
 Result<DecodedFrame> wire_decode(const u8* data, size_t len) {

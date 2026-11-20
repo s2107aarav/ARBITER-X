@@ -12,6 +12,7 @@
 #include "arbiter/types.hpp"
 
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace arbiter {
@@ -40,6 +41,7 @@ public:
     const std::string& dir() const noexcept { return dir_; }
 
 private:
+    std::vector<u64> available_seqs(std::error_code& ec) const;
     std::string dir_;
     size_t keep_;
 };

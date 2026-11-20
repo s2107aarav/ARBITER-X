@@ -114,14 +114,13 @@ AX_TEST(corpus_text_format_roundtrips) {
         CHECK_EQ(back.value[i].ord.price, ops[i].ord.price);
         CHECK_EQ(back.value[i].ord.qty, ops[i].ord.qty);
         CHECK_EQ(back.value[i].target, ops[i].target);
+        CHECK_EQ(back.value[i].ord.arrival, ops[i].ord.arrival);
+        CHECK_EQ(back.value[i].ord.expiry, ops[i].ord.expiry);
         if (testfw::current_failed()) return;
     }
     // corrupted line must be a loud parse failure
-    const std::string bad = text;
-    const size_t nl = bad.find('\n');
     auto badr = diff::ops_from_text("X 1 1 0 0 0 1000 5 0\n");
     CHECK(!badr);
-    (void)nl;
     // tuned generator with default params == classic distribution shape
     // (same stream seed discipline: NOT identical draws, but the classic
     // distribution must still produce zero divergence)

@@ -128,8 +128,8 @@ public:
         }
         // rate limit: drop timestamps outside the window, then count
         // (per account: each strategy gets its own message budget)
-        while (!st.window.empty() && st.window.front() <= saturating_sub_i64(now, cfg_.rate_window_ns))
-            st.window.erase(st.window.begin());
+        const auto cutoff = saturating_sub_i64(now, cfg_.rate_window_ns);
+        st.window.erase(st.window.begin(), std::upper_bound(st.window.begin(), st.window.end(), cutoff));
         if (st.window.size() >= cfg_.max_msgs_per_window) return reject(kRiskRateLimit);
         st.window.push_back(now);
         ++st.accepted;
@@ -183,17 +183,13 @@ public:
     };
     Aggregates state() const {
         Aggregates a;
-        const auto add_u64 = [](u64 x, u64 y) {
-            return std::numeric_limits<u64>::max() - x < y ? std::numeric_limits<u64>::max()
-                                                            : x + y;
-        };
         for (const auto& [acct, st] : st_) {
             (void)acct;
             a.position = saturating_add_i64(a.position, st.position);
-            a.accepted = add_u64(a.accepted, st.accepted);
-            a.rejected = add_u64(a.rejected, st.rejected);
+            a.accepted = saturating_add_u64(a.accepted, st.accepted);
+            a.rejected = saturating_add_u64(a.rejected, st.rejected);
             for (size_t i = 0; i <= kRiskDuplicateId; ++i)
-                a.rejects_by_reason[i] = add_u64(a.rejects_by_reason[i],
+                a.rejects_by_reason[i] = saturating_add_u64(a.rejects_by_reason[i],
                                                  st.rejects_by_reason[i]);
             a.window.insert(a.window.end(), st.window.begin(), st.window.end());
         }

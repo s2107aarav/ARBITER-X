@@ -49,7 +49,7 @@ body: config_hash | last_event_seq | logical_t | next_order_id |
 ```
 
 `CheckpointStore` manages a bounded ring of `ck_<seq>.snap` files. Recovery =
-newest checkpoint ≤ target + journal tail replay. Verified against full
+newest checkpoint ≤ target + journal tail replay. Both snapshot writers complete a temporary file before replacing the destination. Verified against full
 replay at every checkpoint in the test suite.
 
 ## Wire frames (`protocol/wire.cpp`)
@@ -82,4 +82,4 @@ Format 14 requires the preserved archive/monolith-65b9fa7 implementation; use th
 revision to inspect or rerun old inputs, then regenerate a format-15 snapshot.
 There is no implicit conversion. Journal/wire/book-checkpoint formats are unchanged.
 A restored world preserves execution state, not all historical measurement buffers.
-Restore into a fresh World and discard it if restoration fails.
+Restore into a fresh World and discard it if restoration fails. CLI continuations leave the parent journal intact. A library continuation with journaling enabled requires a new destination and starts a separate journal there.

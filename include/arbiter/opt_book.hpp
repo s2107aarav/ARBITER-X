@@ -18,7 +18,7 @@
 #include "arbiter/book_common.hpp"
 #include "arbiter/flatmap.hpp"
 
-#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace arbiter {
@@ -53,6 +53,7 @@ public:
 
     Price best_bid() const noexcept { return best_bid_ < 0 ? 0 : best_bid_; }
     Price best_ask() const noexcept { return best_ask_ < 0 ? 0 : best_ask_; }
+    Price best_excluding(Side side, const std::unordered_set<u64>& ids) const;
     Qty total_bid_qty() const noexcept;
     Qty total_ask_qty() const noexcept;
     size_t order_count() const noexcept { return index_.size(); }
@@ -112,7 +113,7 @@ private:
     u32 free_head_ = kNone;
     // order id -> packed Loc{off | node<<32 | side<<56}; preallocated,
     // allocation-free in steady state (see FlatIdMap)
-    FlatIdMap index_;
+    FlatIdMap index_{1};
     Price best_bid_ = kNoBid;
     Price best_ask_ = kNoAsk;
     u64 next_book_seq_ = 1;

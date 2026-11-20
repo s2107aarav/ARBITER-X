@@ -513,8 +513,7 @@ AX_TEST(capacity_rejection_zero_fills_both_books) {
     CHECK_EQ(f2.size(), 1u);
     CHECK_EQ(opt.order_count(), 1u);
     const Order* bid = opt.find(1);
-    CHECK(bid);
-    CHECK_EQ(bid->leaves, 3u);
+    CHECK(bid && bid->leaves == 3u);
 }
 
 AX_TEST(opt_book_invalid_span_throws_before_allocation) {
@@ -628,8 +627,7 @@ AX_TEST(partial_cross_rests_its_remainder_below_the_cap) {
         CHECK_EQ(fills[1].qty, 10u);
         CHECK_EQ(b.order_count(), 1u);    // both makers consumed; remainder rests
         const Order* rem = b.find(3);
-        CHECK(rem);
-        CHECK_EQ(rem->leaves, 5u);
+        CHECK(rem && rem->leaves == 5u);
         CHECK_EQ(b.best_bid(), 100u);
     };
     RefBook ref{RefBook::Options{3}};
@@ -698,8 +696,7 @@ AX_TEST(replacement_partially_crossing_at_capacity_is_transactional) {
         CHECK_EQ(fills.back().qty, 10u);
         CHECK(!b.has(1));
         const Order* rem = b.find(3);
-        CHECK(rem);
-        CHECK_EQ(rem->leaves, 15u);
+        CHECK(rem && rem->leaves == 15u);
         CHECK_EQ(b.order_count(), 1u);  // the other ask was fully consumed
     };
     RefBook ref{RefBook::Options{2}};

@@ -8,7 +8,7 @@
 //
 // Stochastic structure (all draws from named Rng streams):
 //   * provider bots (liquidity): Poisson arrivals; join the touch (sometimes
-//     deeper), random cancels, both sides stay alive
+//     improving by extra ticks), random cancels, both sides stay alive
 //   * taker bots: independent Poisson arrivals; aggressive IOC orders with a
 //     momentum bias from recent trade directions
 //   * regime switch: calm <-> volatile Markov chain scaling arrival rates,
@@ -32,7 +32,7 @@ struct SimConfig {
     double taker_arrival_per_ms = 8.0;
     double cancel_fraction = 0.35;     // of provider arrivals are cancels
     i64 touch_offset_ticks = 1;        // provider joins inside the spread
-    i64 deep_offset_ticks = 6;         // sometimes quotes deeper
+    i64 deep_offset_ticks = 6;         // extra improvement toward the opposite touch
     LogicalNs regime_dwell_ns = 4'000'000;
     double volatile_rate_multiplier = 3.0;
     Qty volatile_qty_multiplier = 2;

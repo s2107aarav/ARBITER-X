@@ -23,8 +23,8 @@ This document lists the model's limits. Claims that contradict it are bugs.
   markets, and not "causal proof" (shared randomness is variance control,
   not causal identification).
 - The clustered regime's measured effects are heavy-tailed across seeds;
-  the flagship result at L=8µs is UNCERTAIN (point estimates material,
-  Holm-corrected significance not reached at 8 seeds, see
+  the flagship result at L=8µs is UNCERTAIN (the primary estimate falls below the materiality threshold,
+  with Holm-adjusted p = 1.0 across eight seeds, see
   docs/EXPERIMENTS/flagship_allocation.md).
 - Frozen-vs-reactive differences show the reactive estimate includes
   observation-channel feedback; the split does not estimate real-market

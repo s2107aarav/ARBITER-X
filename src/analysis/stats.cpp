@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <stdexcept>
 
 namespace arbiter {
 namespace stats {
@@ -15,6 +16,10 @@ double mean_of(const std::vector<double>& x) {
     double s = 0.0;
     for (double v : x) s += v;
     return s / static_cast<double>(x.size());
+}
+void validate_pvalues(const std::vector<double>& p) {
+    for (double v : p)
+        if (!(v >= 0.0 && v <= 1.0)) throw std::invalid_argument("p-value outside [0,1]");
 }
 }  // namespace
 
@@ -57,33 +62,38 @@ MeanCI mean_ci(const std::vector<double>& x, size_t hac_lag) {
     return r;
 }
 
-
 CorrResult pearson(const std::vector<double>& x, const std::vector<double>& y) {
     CorrResult r;
     const size_t n = std::min(x.size(), y.size());
     r.n = n;
     if (n < 2) return r;
-    double sx = 0.0, sy = 0.0;
+    double scale_x = 0, scale_y = 0;
     for (size_t i = 0; i < n; ++i) {
-        sx += x[i];
-        sy += y[i];
+        scale_x = std::max(scale_x, std::abs(x[i]));
+        scale_y = std::max(scale_y, std::abs(y[i]));
     }
-    const double mx = sx / static_cast<double>(n);
-    const double my = sy / static_cast<double>(n);
-    double sxy = 0.0, sxx = 0.0, syy = 0.0;
+    if (scale_x == 0 || scale_y == 0) return r;
+    double mx = 0, my = 0;
     for (size_t i = 0; i < n; ++i) {
-        sxy += (x[i] - mx) * (y[i] - my);
-        sxx += (x[i] - mx) * (x[i] - mx);
-        syy += (y[i] - my) * (y[i] - my);
+        mx += x[i] / scale_x;
+        my += y[i] / scale_y;
     }
-    if (sxx <= 0.0 || syy <= 0.0) return r;
-    r.r = sxy / std::sqrt(sxx * syy);
+    mx /= n;
+    my /= n;
+    double sxy = 0, sxx = 0, syy = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const double dx = x[i] / scale_x - mx, dy = y[i] / scale_y - my;
+        sxy += dx * dy;
+        sxx += dx * dx;
+        syy += dy * dy;
+    }
+    if (sxx && syy) r.r = std::clamp(sxy / std::sqrt(sxx) / std::sqrt(syy), -1.0, 1.0);
     return r;
 }
 
 
-
 std::vector<double> bonferroni(const std::vector<double>& p) {
+    validate_pvalues(p);
     std::vector<double> q(p.size());
     const double m = static_cast<double>(p.size());
     for (size_t i = 0; i < p.size(); ++i) q[i] = std::min(1.0, p[i] * m);
@@ -91,6 +101,7 @@ std::vector<double> bonferroni(const std::vector<double>& p) {
 }
 
 std::vector<double> holm(const std::vector<double>& p) {
+    validate_pvalues(p);
     const size_t m = p.size();
     std::vector<size_t> idx(m);
     for (size_t i = 0; i < m; ++i) idx[i] = i;
@@ -98,7 +109,7 @@ std::vector<double> holm(const std::vector<double>& p) {
     std::vector<double> adjusted(m, 1.0);
     double running_max = 0.0;
     for (size_t k = 0; k < m; ++k) {
-        const double raw = std::clamp(p[idx[k]], 0.0, 1.0);
+        const double raw = p[idx[k]];
         const double candidate = static_cast<double>(m - k) * raw;
         running_max = std::max(running_max, std::min(1.0, candidate));
         adjusted[idx[k]] = running_max;
@@ -107,6 +118,7 @@ std::vector<double> holm(const std::vector<double>& p) {
 }
 
 std::vector<double> fdr_bh(const std::vector<double>& p) {
+    validate_pvalues(p);
     const size_t m = p.size();
     std::vector<size_t> idx(m);
     for (size_t i = 0; i < m; ++i) idx[i] = i;
@@ -149,7 +161,6 @@ std::vector<Fold> walk_forward(size_t n, size_t n_folds, double min_train_frac) 
     }
     return folds;
 }
-
 
 std::string format_ci(double lo, double hi) {
     char buf[128];

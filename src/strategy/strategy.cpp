@@ -23,6 +23,7 @@ void MarketMakerStrategy::on_md_new(u64 md_id, Side side, Price price, Qty qty) 
     if (it != own_.end()) {
         // Our order confirmed resting. Everything the view holds at this
         // price arrived before us, so it is all ahead of us.
+        it->second.leaves = qty;
         it->second.confirmed = true;
         it->second.confirm_seq = ++confirm_seq_counter_;
         it->second.ahead = view_.qty_at(side, price);
@@ -73,12 +74,13 @@ void MarketMakerStrategy::consume_view_level(Side s, Price price, Qty qty) {
     std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.confirm_seq < b.confirm_seq; });
 
     Qty remaining = qty;
-    Qty our_fill = 0;
+    Qty our_fill = 0, external_taken = 0;
     for (const auto& c : cands) {
-        if (remaining == 0) break;
         auto it = own_.find(c.id);
         OwnOrder& oo = it->second;
+        oo.ahead -= std::min(oo.ahead, external_taken);
         const Qty take = std::min(remaining, oo.ahead);
+        external_taken += take;
         oo.ahead -= take;
         remaining -= take;
         if (remaining > 0) {
@@ -126,14 +128,15 @@ void MarketMakerStrategy::on_md_trade(Price price, Qty qty) {
     consume_view_level(s, price, qty);
 }
 
-void MarketMakerStrategy::on_fill(u64 order_id, Side side, Price price, Qty qty) {
+void MarketMakerStrategy::on_fill(u64 order_id, Side side, Price price, Qty qty, Liquidity role) {
     ++real_fills_;
     real_filled_qty_ += qty;
     const i64 signed_qty = signed_qty_i64(side, qty);
     inventory_ = saturating_add_i64(inventory_, signed_qty);
     cash_ = saturating_sub_i64(cash_, saturating_mul_i64(signed_qty, price));
     auto it = own_.find(order_id);
-    if (it != own_.end()) {
+    // Confirmed queue quantities already consume the corresponding MD trades.
+    if (role == Liquidity::Taker && it != own_.end() && !it->second.confirmed) {
         it->second.leaves = it->second.leaves > qty ? it->second.leaves - qty : 0;
         if (it->second.leaves == 0) own_.erase(it);
     }
@@ -157,8 +160,11 @@ std::vector<StrategyAction> MarketMakerStrategy::build_quotes() {
     Price ask = saturating_sub_i64(saturating_add_i64(fair_, cfg_.half_spread_ticks), skew);
     bid = std::clamp<Price>(bid, 2, 99'998);
     ask = std::clamp<Price>(ask, bid + 1, 99'999);
-    const bool want_bid = inventory_ < cfg_.max_inventory;
-    const bool want_ask = inventory_ > -cfg_.max_inventory;
+    const auto quote_qty = [&](i64 headroom) {
+        return std::min(cfg_.quote_size, static_cast<Qty>(std::max<i64>(0, headroom)));
+    };
+    const Qty bid_qty = quote_qty(saturating_sub_i64(cfg_.max_inventory, inventory_));
+    const Qty ask_qty = quote_qty(saturating_add_i64(cfg_.max_inventory, inventory_));
 
     // Action emission order must never depend on
     // unordered_map iteration order, a restored world would otherwise assign
@@ -172,12 +178,12 @@ std::vector<StrategyAction> MarketMakerStrategy::build_quotes() {
     for (u64 id : ids) {
         const OwnOrder& oo = own_.at(id);
         if (oo.side == Side::Buy) {
-            if (!want_bid || oo.price != bid)
+            if (oo.leaves > bid_qty || oo.price != bid)
                 to_cancel.push_back(id);
             else
                 have_bid = id;
         } else {
-            if (!want_ask || oo.price != ask)
+            if (oo.leaves > ask_qty || oo.price != ask)
                 to_cancel.push_back(id);
             else
                 have_ask = id;
@@ -189,20 +195,20 @@ std::vector<StrategyAction> MarketMakerStrategy::build_quotes() {
         a.cancel_id = id;
         acts.push_back(a);
     }
-    if (want_bid && !have_bid) {
+    if (bid_qty && !have_bid) {
         StrategyAction a;
         a.kind = StrategyAction::Kind::Send;
         a.ord = Order{next_order_id_++, cfg_.account, Side::Buy, OrderType::Limit, Tif::GTC,
-                      bid, cfg_.quote_size, cfg_.quote_size, 0, 0, 0};
-        own_[a.ord.id] = OwnOrder{Side::Buy, bid, cfg_.quote_size, kNoAhead, false, 0};
+                      bid, bid_qty, bid_qty, 0, 0, 0};
+        own_[a.ord.id] = OwnOrder{Side::Buy, bid, bid_qty, kNoAhead, false, 0};
         acts.push_back(a);
     }
-    if (want_ask && !have_ask) {
+    if (ask_qty && !have_ask) {
         StrategyAction a;
         a.kind = StrategyAction::Kind::Send;
         a.ord = Order{next_order_id_++, cfg_.account, Side::Sell, OrderType::Limit, Tif::GTC,
-                      ask, cfg_.quote_size, cfg_.quote_size, 0, 0, 0};
-        own_[a.ord.id] = OwnOrder{Side::Sell, ask, cfg_.quote_size, kNoAhead, false, 0};
+                      ask, ask_qty, ask_qty, 0, 0, 0};
+        own_[a.ord.id] = OwnOrder{Side::Sell, ask, ask_qty, kNoAhead, false, 0};
         acts.push_back(a);
     }
     if (!acts.empty()) ++quote_updates_;
@@ -347,6 +353,7 @@ std::vector<MarketMakerStrategy::OwnSnapshot> MarketMakerStrategy::own_snapshot(
     out.reserve(own_.size());
     for (const auto& [id, oo] : own_)
         out.push_back({id, oo.side, oo.price, oo.leaves, oo.ahead, oo.confirmed, oo.confirm_seq});
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     return out;
 }
 

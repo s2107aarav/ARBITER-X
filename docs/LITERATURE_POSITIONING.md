@@ -104,7 +104,7 @@ latency as a scalar delay, or (iii) studies venue-imposed delays
 (speed bumps/FBAs). The flagship's contribution is the QUESTION plus a
 deterministic, engine-verified, paired-counterfactual instrument for it,
 not a positive empirical finding (the current verdict is
-UNCERTAIN/UNDERPOWERED; docs/EXPERIMENTS/flagship_allocation.md).
+inconclusive across eight seeds; docs/EXPERIMENTS/flagship_allocation.md).
 
 ## What is explicitly NOT claimed as novel
 

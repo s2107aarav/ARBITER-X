@@ -32,7 +32,7 @@ struct JournalHeader {
 
 class JournalWriter {
 public:
-    static Result<JournalWriter> create(const std::string& path, u64 master_seed, u64 config_hash);
+    static Result<JournalWriter> create(const std::string& path, u64 master_seed, u64 config_hash, bool exclusive = false);
     ~JournalWriter();
     JournalWriter(JournalWriter&& o) noexcept;
     JournalWriter& operator=(JournalWriter&& o) noexcept;
@@ -57,7 +57,6 @@ private:
     std::vector<char> buf_;
     u64 records_ = 0;
     u64 next_seq_ = 1;
-    size_t unflushed_ = 0;
 };
 
 class JournalReader {
@@ -68,8 +67,7 @@ public:
     JournalReader& operator=(JournalReader&& o) noexcept;
     JournalReader(const JournalReader&) = delete;
     JournalReader& operator=(const JournalReader&) = delete;
-    // True iff another full frame is available (peeks at the next frame
-    // length, so a clean EOF is distinguishable from a corrupt frame).
+    // Peek at a frame length. next() verifies the complete frame.
     bool has_next();
     Result<Event> next();
     bool eof() const noexcept { return eof_; }
@@ -93,7 +91,6 @@ private:
     bool peeked_ = false;
     u32 peeked_len_ = 0;
     Status error_{};
-    std::vector<char> buf_;
 };
 
 struct JournalVerifyReport {

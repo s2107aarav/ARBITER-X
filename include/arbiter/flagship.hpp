@@ -145,6 +145,7 @@ struct PairComparison {
     double pnl_diff_per_lot = 0.0;  // mean PnL diff per filled lot (ticks*qty/lot)
     bool statistically_significant = false;
     bool economically_material = false;
+    const char* verdict() const noexcept;
 };
 
 struct FlagshipResult {

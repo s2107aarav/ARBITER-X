@@ -25,7 +25,7 @@ public:
     size_t count() const noexcept { return count_; }
     double min() const noexcept { return min_; }
     double max() const noexcept { return max_; }
-    double mean() const noexcept { return count_ == 0 ? 0.0 : sum_ / static_cast<double>(count_); }
+    double mean() const noexcept { return mean_; }
 
     // p in [0,1]; 0 for an empty reservoir. Sorts a cached copy on demand.
     double percentile(double p) const;
@@ -48,7 +48,7 @@ private:
     size_t capacity_;
     size_t count_ = 0;   // total records seen
     u64 rng_state_ = 0x853c49e6748fea9bull;
-    double sum_ = 0, min_ = 0, max_ = 0;
+    double mean_ = 0, min_ = 0, max_ = 0;
     mutable bool sorted_ = false;
 };
 

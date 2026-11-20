@@ -142,6 +142,8 @@ AX_TEST(mm_queue_model_partial_and_stale_transitions) {
     // and the exchange's authoritative fills keep the truth coherent
     mm2.on_fill(q2, Side::Buy, p2, 10);
     CHECK_EQ(mm2.inventory(), 10);
+    mm2.on_md_trade(p2, 15);
+    CHECK_EQ(mm2.inference_fill_qty(), 25u);
 
     // --- cancel churn of a partially consumed order: inference and the
     // real world agree the remainder dies with the cancel
@@ -1553,7 +1555,7 @@ AX_TEST(world_book_admission_reject_is_terminal) {
     RunStats s = w.run();
     CHECK(s.strategy_orders_sent > 0);
     CHECK_EQ(s.risk_rejected, 0u);   // risk accepted every one of them
-    CHECK_EQ(s.trades, s.trades);    // bots keep trading (sanity)
+    CHECK(s.trades > 0);    // bots keep trading (sanity)
     auto rd = JournalReader::open(path);
     CHECK(rd);
     if (!rd) return;

@@ -24,6 +24,8 @@ AX_TEST(stats_mean_ci_and_corrections) {
     }
     stats::MeanCI ci2 = stats::mean_ci(ar, 20);
     CHECK(ci2.se_hac >= ci2.se_iid);  // dependence inflates the robust SE
+    const double large = std::numeric_limits<double>::max();
+    CHECK(approx(stats::pearson({-large, large}, {large, -large}).r, -1));
     auto bh = stats::fdr_bh({0.001, 0.01, 0.5});
     CHECK(bh[0] <= bh[1] && bh[1] <= bh[2]);
     auto bf = stats::bonferroni({0.01, 0.5});
