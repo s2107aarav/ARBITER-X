@@ -31,8 +31,11 @@ OptBook::Options checked_book_options(const WorldConfig& cfg) {
 }
 }  // namespace
 
-World::World(const WorldConfig& cfg, u64 master_seed)
-    : cfg_(cfg),
+World::World(const WorldConfig& cfg, u64 master_seed) : World(cfg, master_seed, nullptr) {}
+
+World::World(const WorldConfig& cfg, u64 master_seed, WorldObserver* observer)
+    : observer_(observer),
+      cfg_(cfg),
       cfg_hash_(cfg.hash()),
       master_seed_(master_seed),
       book_(checked_book_options(cfg)),
@@ -83,11 +86,15 @@ void World::jappend(const Event& e) {
             throw std::runtime_error("arbiter: journal append failed (" +
                                      std::string(to_cstr(st.code)) + ")");
         ++stats_.journal_records;
+        if (observer_) observer_->journal(observation(), stats_.journal_records, e);
     }
 }
 
-void World::schedule(LogicalNs t, u8 rank, EvType type, u64 a, u64 b, i64 p) {
-    queue_.push(WorldEvent{t, rank, tiebreak_++, type, a, b, 0, p});
+u64 World::schedule(LogicalNs t, u8 rank, EvType type, u64 a, u64 b, i64 p) {
+    const WorldEvent event{t, rank, tiebreak_++, type, a, b, 0, p};
+    queue_.push(event);
+    if (observer_) observer_->scheduler(observation(), ScheduleBoundary::Scheduled, event);
+    return event.tiebreak;
 }
 
 // ---------------- main loop ----------------
@@ -108,6 +115,10 @@ RunStats World::run(u64 max_additional_events) {
         WorldEvent ev = queue_.top();
         queue_.pop();
         now_ = ev.t;
+        if (observer_) {
+            observing_ordinal_ = events_ + 1;
+            observer_->scheduler(observation(), ScheduleBoundary::Begin, ev);
+        }
         process(ev);
         ++events_;
         if (cfg_.checkpoint_every_events && events_ % cfg_.checkpoint_every_events == 0) {
@@ -119,6 +130,16 @@ RunStats World::run(u64 max_additional_events) {
         }
         if (cfg_.hash_every_events && events_ % cfg_.hash_every_events == 0)
             stats_.hash_timeline.emplace_back(events_, state_hash());
+        if (observer_) {
+            const auto position = [&](u32 account) {
+                const auto pos = ledger_.find(account);
+                return pos == ledger_.end() ? i64{0} : pos->second.position;
+            };
+            observer_->accounting(observation(), position(cfg_.mm.account), mm_.inventory(),
+                                  position(cfg_.momentum.account), mom_.inventory(), risk_);
+            observer_->scheduler(observation(), ScheduleBoundary::Complete, ev);
+            observing_ordinal_ = 0;
+        }
     }
 
     stats_.events_processed = events_;
@@ -193,7 +214,7 @@ void World::process(const WorldEvent& ev) {
             break;
         }
         case static_cast<u16>(EvMdDeliver):
-            feed_handler_md(ev.b);
+            feed_handler_md(ev);
             break;
         case static_cast<u16>(EvIntentDue): {
             std::vector<StrategyAction> acts = ev.a == 0 ? mm_.on_timer() : mom_.on_timer();
@@ -217,6 +238,8 @@ void World::process(const WorldEvent& ev) {
                 // CRC/structure failure: the frame is unintelligible, a real
                 // gateway could not attribute it either.
                 ++stats_.wire_frames_corrupted;
+                if (observer_) observer_->receiver(observation(), 2, m.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::DecodeRejected);
                 Event flt;
                 flt.t = now_;
                 flt.type = EvType::Fault;
@@ -237,6 +260,8 @@ void World::process(const WorldEvent& ev) {
             // a known id).
             if (!order_rx_seqs_.insert(seq).second) {
                 ++stats_.order_frames_duplicated;
+                if (observer_) observer_->receiver(observation(), 2, m.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::Deduplicated);
                 m.delivered = true;
                 break;
             }
@@ -244,6 +269,8 @@ void World::process(const WorldEvent& ev) {
             m.is_cancel = is_cancel;
             m.delivered = true;
             ++stats_.wire_frames_decoded;
+            if (observer_) observer_->receiver(observation(), 2, m.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::Accepted);
             if (m.is_cancel) {
                 // cancels bypass risk (documented); straight to the exchange
                 cancel_in_book(m.ord.id, now_);
@@ -251,6 +278,7 @@ void World::process(const WorldEvent& ev) {
             }
             const bool dup = gateway_known_ids_.count(m.ord.id) != 0;
             const RiskVerdict v = risk_.check(m.ord, now_, dup);
+            if (observer_) observer_->risk(observation(), m.ord.id, v.accept, v.reason);
             if (v.accept) {
                 gateway_known_ids_.insert(m.ord.id);
                 // reserve the full working-order exposure NOW (gateway
@@ -304,6 +332,8 @@ void World::process(const WorldEvent& ev) {
             }();
             if (!decoded_ok || df.channel != 3 || (df.flags & kFlagExecReport) == 0) {
                 ++stats_.wire_frames_corrupted;
+                if (observer_) observer_->receiver(observation(), 3, n.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::DecodeRejected);
                 Event flt;
                 flt.t = now_;
                 flt.type = EvType::Fault;
@@ -318,11 +348,15 @@ void World::process(const WorldEvent& ev) {
             // not double fills, fees, PnL, markouts or risk updates.
             if (!exec_rx_seqs_.insert(df.md_seq).second) {
                 ++stats_.exec_frames_duplicated;
+                if (observer_) observer_->receiver(observation(), 3, n.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::Deduplicated);
                 n.delivered = true;
                 break;
             }
             n.delivered = true;
             ++stats_.wire_frames_decoded;
+            if (observer_) observer_->receiver(observation(), 3, n.transport_seq, ev.tiebreak,
+                                                    ReceiveOutcome::Accepted);
             const ExecReport& x = df.exec;
             if (x.kind == 0) {
                 Fill f;
@@ -427,6 +461,7 @@ void World::enter_book(Order o, LogicalNs t) {
     }
     std::vector<Fill> fills;
     const Status s = book_.add_order(o, fills, nullptr);
+    if (s && observer_) observer_->book(observation(), o.id, o.side, fills, book_, false);
     if (!s) {
         // Gateway acceptance is not exchange admission. A book-level reject
         // must be terminal and observable; it must not be journaled as an add.
@@ -563,7 +598,9 @@ void World::cancel_in_book(u64 order_id, LogicalNs t) {
     const Order* o = book_.find(order_id);
     if (!o) return;  // already gone (filled / unknown): nothing to publish
     const u32 owner = o->account;
+    const Side side = observer_ ? o->side : Side{};
     if (Status s = book_.cancel(order_id); s) {
+        if (observer_) observer_->book(observation(), order_id, side, {}, book_, true);
         jappend(ev_book_cancel(0, t, order_id));
         // Exchange-time reservation release: a canceled order's working
         // exposure is freed whether or not the cancel confirmation report
@@ -597,7 +634,10 @@ void World::publish_md(std::vector<Event>& mds, LogicalNs t) {
         // loss on every channel.
         std::string frame = wire_encode(1, seq, kFlagNone, e);
         ++stats_.wire_frames_encoded;
+        const u64 order_id = (e.type == EvType::MdNew || e.type == EvType::MdCancel) ? e.a : 0;
         if (d.drop) {
+            if (observer_) observer_->frame(observation(), {1, seq, order_id, t, frame,
+                                                             true, false, 0, 0, nullptr});
             ++stats_.md_dropped;
             continue;
         }
@@ -605,32 +645,39 @@ void World::publish_md(std::vector<Event>& mds, LogicalNs t) {
         if (d.reorder_extra_ns) ++stats_.md_reordered;
         // The original delivery is its own packet attempt...
         md_packets_.emplace(md_packet_seq_++, MdPacket{seq, frame});
-        schedule(add_time_checked(add_time_checked(t, d.delay_ns), d.reorder_extra_ns), RankMd,
-                 EvMdDeliver, 0,
-                 md_packet_seq_ - 1, 0);
+        const auto arrival = schedule(add_time_checked(add_time_checked(t, d.delay_ns), d.reorder_extra_ns),
+                                      RankMd, EvMdDeliver, 0, md_packet_seq_ - 1, 0);
+        if (observer_) observer_->frame(observation(), {1, seq, order_id, t, frame, false, false,
+                                                        arrival, 0, nullptr});
         // ...and a duplicated delivery is a DISTINCT packet attempt: same
         // bytes and sequence, but its own scheduled event and delivery slot,
         // so it can never alias (or be delivered by) the original's event.
         if (d.duplicate) {
             md_packets_.emplace(md_packet_seq_++, MdPacket{seq, frame});
-            schedule(add_time_checked(add_time_checked(t, d.dup_extra_ns), d.reorder_extra_ns),
-                     RankMd, EvMdDeliver, 0,
-                     md_packet_seq_ - 1, 0);
+            const auto duplicate = schedule(add_time_checked(add_time_checked(t, d.dup_extra_ns), d.reorder_extra_ns),
+                                            RankMd, EvMdDeliver, 0, md_packet_seq_ - 1, 0);
+            if (observer_) observer_->frame(observation(), {1, seq, order_id, t, frame, false, true,
+                                                            duplicate, 0, nullptr});
         }
     }
 }
 
 // ---------------- feed handler (strategy side) ----------------
 
-void World::feed_handler_md(u64 packet_id) {
-    auto pit = md_packets_.find(packet_id);
-    if (pit == md_packets_.end()) return;  // already processed (cannot happen with 1:1 events)
+void World::feed_handler_md(const WorldEvent& ev) {
+    auto pit = md_packets_.find(ev.b);
+    if (pit == md_packets_.end()) {
+        // A direct snapshot recovery can retire a packet before this event.
+        if (observer_) observer_->receiver(observation(), 1, 0, ev.tiebreak, ReceiveOutcome::Retired);
+        return;
+    }
     const MdPacket packet = std::move(pit->second);
     md_packets_.erase(pit);
     auto decoded = wire_decode(reinterpret_cast<const u8*>(packet.frame.data()), packet.frame.size());
     if (!decoded || decoded.value.channel != 1 || decoded.value.md_seq != packet.md_seq ||
         (decoded.value.flags & (kFlagSnapshot | kFlagExecReport)) != 0) {
         ++stats_.wire_frames_corrupted;
+        if (observer_) observer_->receiver(observation(), 1, packet.md_seq, ev.tiebreak, ReceiveOutcome::DecodeRejected);
         Event flt;
         flt.t = now_;
         flt.type = EvType::Fault;
@@ -648,10 +695,13 @@ void World::feed_handler_md(u64 packet_id) {
     // for processing — the same contract as the order and exec channels.
     if (md_seq < expected_md_seq_ || pending_md_.count(md_seq)) {
         ++stats_.md_duplicated;
+        if (observer_) observer_->receiver(observation(), 1, md_seq, ev.tiebreak, ReceiveOutcome::Deduplicated);
         return;
     }
     ++stats_.wire_frames_decoded;
     pending_md_.emplace(md_seq, decoded.value.ev);
+    if (observer_) observer_->receiver(observation(), 1, md_seq, ev.tiebreak,
+                                      md_seq > expected_md_seq_ ? ReceiveOutcome::Held : ReceiveOutcome::Accepted);
     if (md_seq > expected_md_seq_) {
         // arrived out of order: hold it in pending_md_ and
         // request retransmission of whatever is missing
@@ -685,12 +735,14 @@ void World::deliver_expected() {
                 break;
         }
         pending_md_.erase(it);
+        if (observer_) observer_->feed(observation(), FeedBoundary::Applied, expected_md_seq_ - 1, expected_md_seq_);
     }
 }
 
 void World::maybe_schedule_gap_request() {
     if (gap_request_pending_) return;
     gap_request_pending_ = true;
+    if (observer_) observer_->feed(observation(), FeedBoundary::GapScheduled, expected_md_seq_, md_seq_);
     schedule(add_time_checked(now_, 5'000), RankGap, EvGapRequestDue, 0, 0, 0);
 }
 
@@ -705,6 +757,7 @@ void World::gap_recover() {
         // the wire-frame ladder encoding is future work, documented in
         // docs/NETWORK_MODEL.md)
         mm_.rebuild_view(book_.to_ladder());
+        if (observer_) observer_->feed(observation(), FeedBoundary::SnapshotFallback, expected_md_seq_, md_seq_);
         expected_md_seq_ = md_seq_;
         for (auto it = pending_md_.begin(); it != pending_md_.end();) {
             if (it->first < expected_md_seq_)
@@ -735,9 +788,13 @@ void World::gap_recover() {
             md_packets_.emplace(md_packet_seq_++,
                                 MdPacket{seq, wire_encode(1, seq, kFlagRetransmit, *ev)});
             ++stats_.wire_frames_encoded;
-            schedule(add_time_checked(now_, cfg_.md_channel.base_delay_ns), RankMd,
-                     EvMdDeliver, 0,
-                     md_packet_seq_ - 1, 0);
+            const auto arrival = schedule(add_time_checked(now_, cfg_.md_channel.base_delay_ns), RankMd,
+                                          EvMdDeliver, 0, md_packet_seq_ - 1, 0);
+            if (observer_) {
+                const u64 order_id = (ev->type == EvType::MdNew || ev->type == EvType::MdCancel) ? ev->a : 0;
+                observer_->frame(observation(), {1, seq, order_id, now_, md_packets_.at(md_packet_seq_ - 1).frame,
+                                                 false, false, arrival, 0, nullptr, 0, true});
+            }
             ++stats_.md_recovered;
         }
     }
@@ -867,7 +924,11 @@ void World::route_intent(const StrategyAction& act, LogicalNs t) {
     const bool is_cancel = act.kind == StrategyAction::Kind::Cancel;
     const LogicalNs decision_latency = cfg_.decision_latency_for(is_cancel);
     const LogicalNs depart_t = add_time_checked(t, decision_latency);
+    const Order* intent = is_cancel ? nullptr : &act.ord;
+    const u64 order_id = is_cancel ? act.cancel_id : act.ord.id;
     if (d.drop) {
+        if (observer_) observer_->frame(observation(), {2, m.transport_seq, order_id, t, m.frame,
+                                                        true, false, 0, static_cast<u8>(is_cancel), intent});
         ++stats_.order_frames_dropped;
         ++stats_.wire_frames_encoded;
         return;
@@ -898,20 +959,29 @@ void World::route_intent(const StrategyAction& act, LogicalNs t) {
     const bool cancel = m.is_cancel;
     const size_t idx = inflight_.size();
     inflight_.push_back(std::move(m));
-    schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency), d.delay_ns),
+    const u64 arrival = schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency), d.delay_ns),
                               d.reorder_extra_ns),
              RankGateway,
              EvGatewayArrival, cancel ? 1 : 0, idx, 0);
+    const auto observe_attempt = [&](u64 arrival_id, bool duplicate) {
+        if (!observer_) return;
+        const Msg& msg = inflight_[idx];
+        observer_->frame(observation(), {2, msg.transport_seq, order_id, depart_t, msg.frame,
+                                         false, duplicate, arrival_id, static_cast<u8>(is_cancel), intent});
+    };
+    observe_attempt(arrival, false);
     // A duplicated delivery re-transmits the SAME frame (same transport
     // sequence); the gateway dedupes it by decoded sequence. The duplicate
     // is counted when the receiver SUPPRESSES it (order_frames_duplicated),
     // not here: this counter is receiver-side, like exec_frames_duplicated.
-    if (d.duplicate)
-        schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency),
+    if (d.duplicate) {
+        const u64 duplicate = schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency),
                                                    d.dup_extra_ns),
                                   d.reorder_extra_ns),
                  RankGateway,
                  EvGatewayArrival, cancel ? 1 : 0, idx, 0);
+        observe_attempt(duplicate, true);
+    }
 }
 
 // ---------------- wire frame codecs (live path) ----------------
@@ -1000,25 +1070,38 @@ bool World::send_notify(Notify n, LogicalNs t) {
     ++stats_.wire_frames_encoded;  // created before network loss
     const DeliveryPlan d = exec_ch_.next_delivery();
     if (d.drop) {
+        if (observer_) observer_->frame(observation(), {3, n.transport_seq, n.fill.taker_order_id, t,
+                                                        n.frame, true, false, 0, n.kind, nullptr, n.kind == 0 ? n.fill.maker_order_id : 0});
         ++stats_.exec_frames_dropped;
         return false;
     }
     if (d.corrupt) corrupt_frame(n.frame, corrupt_rng_);
     const size_t idx = notifies_.size();
     notifies_.push_back(std::move(n));
-    schedule(add_time_checked(
+    const u64 arrival = schedule(add_time_checked(
                  add_time_checked(add_time_checked(t, cfg_.publish_latency_ns), d.delay_ns),
                  d.reorder_extra_ns),
              RankExec, EvExecNotify, 0, idx, 0);
+    const auto observe_attempt = [&](u64 arrival_id, bool duplicate) {
+        if (!observer_) return;
+        const Notify& notify = notifies_[idx];
+        const LogicalNs departure = t + cfg_.publish_latency_ns; // already checked by schedule
+        observer_->frame(observation(), {3, notify.transport_seq, notify.fill.taker_order_id, departure,
+                                         notify.frame, false, duplicate, arrival_id, notify.kind, nullptr,
+                                         notify.kind == 0 ? notify.fill.maker_order_id : 0});
+    };
+    observe_attempt(arrival, false);
     // A duplicated delivery re-transmits the SAME frame (same transport
     // sequence); the strategy feed dedupes it by decoded sequence. The
     // duplicate is counted when the receiver SUPPRESSES it
     // (exec_frames_duplicated), not here.
-    if (d.duplicate)
-        schedule(add_time_checked(add_time_checked(add_time_checked(t, cfg_.publish_latency_ns),
+    if (d.duplicate) {
+        const u64 duplicate = schedule(add_time_checked(add_time_checked(add_time_checked(t, cfg_.publish_latency_ns),
                                                    d.dup_extra_ns),
                                   d.reorder_extra_ns),
                  RankExec, EvExecNotify, 0, idx, 0);
+        observe_attempt(duplicate, true);
+    }
     return !d.corrupt;
 }
 
