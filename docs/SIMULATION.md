@@ -6,7 +6,7 @@ The `MarketSim` bot population generates provider and taker flow:
 
 * **Provider bots** (`provider_arrival_per_ms`, 3 accounts): Poisson
   arrivals; join inside the spread at the observed touch (sometimes
-  deeper); random cancels (`cancel_fraction`). Providers supply liquidity on both sides.
+  improving the quote by extra ticks); random cancels (`cancel_fraction`). Providers supply liquidity on both sides.
 * **Taker bots** (`taker_arrival_per_ms`): Poisson arrivals of aggressive
   IOC orders with a momentum bias from recent trade directions
   (`0.5 + 0.08 * bias`, bias clamped ±4).
@@ -29,9 +29,9 @@ The `MarketSim` bot population generates provider and taker flow:
 
 | quantity | k=0 (Poisson null) | k=0.9 (clustered) |
 |---|---|---|
-| trades | 6,834 (22.8k/s) | 38,015 (126.7k/s) |
-| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.346 (runs emerge) |
-| trade inter-arrival burstiness (cv) | 1.72 (regime chain alone) | 3.29 |
+| trades | 6,827 (22.8k/s) | 44,648 (148.8k/s) |
+| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.414 (runs emerge) |
+| trade inter-arrival burstiness (cv) | 1.72 (regime chain alone) | 2.97 |
 | mid lag-1 autocorr @ trade times | ~0.0 | ~1.0 |
 
 Calibration facts (simulator properties, NOT claims of

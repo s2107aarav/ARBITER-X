@@ -18,12 +18,12 @@ OptBook::OptBook(const Options& opt) : opt_(opt) {
     const u64 span = static_cast<u64>(opt_.max_tick) - static_cast<u64>(opt_.min_tick) + 1;
     if (span > kMaxLadderTicks)
         throw std::invalid_argument("OptBook price span exceeds the supported ladder");
-    if (opt_.reserve_orders > std::numeric_limits<size_t>::max() / 2)
-        throw std::invalid_argument("OptBook reserve_orders overflows index capacity");
+    if (opt_.reserve_orders > (1u << 24))
+        throw std::invalid_argument("OptBook reserve_orders exceeds the packed node range");
     bids_.resize(span);
     asks_.resize(span);
     pool_.reserve(opt_.reserve_orders);
-    index_.reserve(opt_.reserve_orders * 2);
+    index_.reserve(opt_.reserve_orders);
 }
 
 Status OptBook::prepare_rest_resources(u64 order_id) {
@@ -41,7 +41,7 @@ Status OptBook::prepare_rest_resources(u64 order_id) {
         // packed Loc stores the node index in 24 bits: refuse growth beyond
         // the representable range as a normal, side-effect-free Capacity
         // failure instead of corrupting the index silently.
-        if (pool_.size() >= 0xFFFFFFu) return fail(Errc::Capacity, order_id);
+        if (pool_.size() > 0xFFFFFFu) return fail(Errc::Capacity, order_id);
         pool_.emplace_back();
         free_head_ = static_cast<u32>(pool_.size() - 1);
         pool_[free_head_].next = kNone;
@@ -206,6 +206,16 @@ Qty OptBook::match_against(Order& t, std::vector<Fill>& fills) {
     return matched;
 }
 
+Price OptBook::best_excluding(Side side, const std::unordered_set<u64>& ids) const {
+    const Price best = is_buy(side) ? best_bid() : best_ask();
+    if (!best) return 0;
+    const auto& levels = is_buy(side) ? bids_ : asks_;
+    for (u32 off = offset_for(side, best); off < levels.size(); ++off)
+        for (u32 node = levels[off].head; node != kNone; node = pool_[node].next)
+            if (!ids.contains(pool_[node].ord.id)) return price_for(side, off);
+    return 0;
+}
+
 Qty OptBook::available_within(Side taker_side, Price limit_price) const noexcept {
     const Side maker_side = is_buy(taker_side) ? Side::Sell : Side::Buy;
     const Price best = is_buy(taker_side) ? best_ask_ : best_bid_;
@@ -326,14 +336,10 @@ Status OptBook::replace(u64 order_id, const Order& replacement, std::vector<Fill
         (replacement.price < opt_.min_tick || replacement.price > opt_.max_tick))
         return fail(Errc::OutOfRange, replacement.id);
     if (Status s = validate_order_entry(replacement, index_.contains(replacement.id)); !s) return s;
-    const Price lim = replacement.type == OrderType::Limit
-                          ? replacement.price
-                          : (is_buy(replacement.side) ? DomainBounds::kMaxPrice : 0);
-    Qty available = available_within(replacement.side, lim);
-    const bool replacement_rests =
-        replacement.type == OrderType::Limit &&
-        (replacement.tif == Tif::GTC || replacement.tif == Tif::GTD);
     if (replacement.tif == Tif::FOK) {
+        const Price lim = replacement.type == OrderType::Limit
+                              ? replacement.price : (is_buy(replacement.side) ? DomainBounds::kMaxPrice : 0);
+        Qty available = available_within(replacement.side, lim);
         // The original's own contra liquidity is removed by the replacement,
         // so it is excluded from the availability projection.
         if (original->side != replacement.side && crosses(replacement.side, lim, original->price))
@@ -341,13 +347,7 @@ Status OptBook::replace(u64 order_id, const Order& replacement, std::vector<Fill
         if (available < replacement.qty)
             return fail(Errc::InsufficientLiquidity, replacement.id);
     }
-    // Everything that can fail normally is settled BEFORE the original is
-    // touched. The cancel below frees one resting slot, so the conservative
-    // active-order cap cannot fail post-cancel; the node/index resources a
-    // resting remainder needs are secured here, pre-cancel, keeping the
-    // replacement transactional (the original survives any rejection).
-    if (replacement_rests && available < replacement.qty)
-        if (Status s = prepare_rest_resources(replacement.id); !s) return s;
+    // Cancel releases the node and index slot needed by a resting replacement.
     if (Status s = cancel(order_id); !s) return s;
     return add_order(replacement, fills, out);
 }

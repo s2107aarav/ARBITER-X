@@ -204,10 +204,10 @@ struct WorldSnapshot {
     // notification routing does not)
     std::vector<std::pair<u64, u32>> order_accounts;
 
-    MarketSim::SimState sim;  // rng states, arrival times, regime, counters, live list
+    MarketSim::SimState sim{};  // rng states, arrival times, regime, counters, live list
 
-    SnapMM mm;
-    SnapMom mom;
+    SnapMM mm{};
+    SnapMom mom{};
     std::vector<SnapRiskAccount> risk_accounts;  // per-account (isolation)
 
     std::vector<u64> gateway_known_ids;         // sorted
@@ -228,7 +228,7 @@ struct WorldSnapshot {
     std::vector<std::pair<u64, i64>> order_sent_t;   // sorted by order id
     std::vector<std::pair<u64, u64>> open_fill_reports;  // sorted by order id (v12)
 
-    SnapStats stats;
+    SnapStats stats{};
 };
 
 // Branch genealogy for forked worlds, recorded in experiment

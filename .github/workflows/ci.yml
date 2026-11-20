@@ -42,6 +42,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
+          -DARBITER_BUILD_OBSERVATORY=ON
           -DARBITER_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build --parallel 2
@@ -74,7 +75,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Script checks
         run: |
-          sh -n scripts/reproduce_all.sh examples/flagship.sh
+          sh -n scripts/reproduce_all.sh && sh -n examples/flagship.sh
       - name: Complete reproduction workflow
         if: matrix.name == 'apple-clang'
         env:
@@ -95,6 +96,7 @@ jobs:
         run: >-
           cmake -S . -B build-sanitize
           -DCMAKE_BUILD_TYPE=Debug
+          -DARBITER_BUILD_OBSERVATORY=ON
           -DARBITER_WARNINGS_AS_ERRORS=ON
           -DARBITER_ENABLE_SANITIZERS=ON
       - name: Build
@@ -102,5 +104,5 @@ jobs:
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=1
-          UBSAN_OPTIONS: print_stacktrace=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build-sanitize --output-on-failure

@@ -23,7 +23,7 @@ struct ReplayResult {
     u64 final_seq = 0;
     LogicalNs logical_t = 0;
     u64 state_hash = 0;         // canonical book hash after replay
-    u64 next_order_id = 0;
+    u64 next_order_id = 1;  // above observed entry ids, at least the checkpoint watermark
 };
 
 // Replay `path` up to `until_seq` (0 = end of journal). If `base` is given,

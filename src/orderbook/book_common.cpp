@@ -7,26 +7,17 @@ namespace arbiter {
 
 void canonical_book_hash(const LadderView& v, Hasher& h) {
     h.tag("ARBITERX/BOOK/1");
-    h.u64v(v.bids.size());
-    for (const auto& lvl : v.bids) {
-        h.i64v(lvl.price);
-        h.u64v(lvl.total_qty);
-        h.u64v(lvl.orders.size());
-        for (const auto& o : lvl.orders) {
-            h.u64v(o.id);
-            h.u64v(o.leaves);
-            h.u64v(o.qty);
-        }
-    }
-    h.u64v(v.asks.size());
-    for (const auto& lvl : v.asks) {
-        h.i64v(lvl.price);
-        h.u64v(lvl.total_qty);
-        h.u64v(lvl.orders.size());
-        for (const auto& o : lvl.orders) {
-            h.u64v(o.id);
-            h.u64v(o.leaves);
-            h.u64v(o.qty);
+    for (const auto* side : {&v.bids, &v.asks}) {
+        h.u64v(side->size());
+        for (const auto& level : *side) {
+            h.i64v(level.price);
+            h.u64v(level.total_qty);
+            h.u64v(level.orders.size());
+            for (const auto& order : level.orders) {
+                h.u64v(order.id);
+                h.u64v(order.leaves);
+                h.u64v(order.qty);
+            }
         }
     }
 }
@@ -116,7 +107,10 @@ bool decode_ladder(ByteReader& r, LadderView& v) {
         }
         return true;
     };
-    return side(v.bids) && side(v.asks);
+    LadderView decoded;
+    if (!side(decoded.bids) || !side(decoded.asks)) return false;
+    v = std::move(decoded);
+    return true;
 }
 
 Status validate_order_entry(const Order& o, bool duplicate_id) {

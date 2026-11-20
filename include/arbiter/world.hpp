@@ -204,11 +204,6 @@ private:
     void deliver_expected();
     void maybe_schedule_gap_request();
     void gap_recover();
-    // Best prices of the book EXCLUDING strategy orders (bots_observe_shadow
-    // mode). O(level count), only used when the interference-control mode
-    // is enabled.
-    Price shadow_best_bid() const;
-    Price shadow_best_ask() const;
     void deliver_fill(const Fill& f, LogicalNs t);
     // static encode/decode helpers (frame codecs, live path)
     static std::string encode_order_frame(const StrategyAction& act, u32 mm_account, u64 seq);
@@ -242,11 +237,11 @@ private:
     // exchange-side md retransmit ring (md_seq -> event): fixed-capacity
     // circular buffer: O(1) insert/evict (the previous vector+erase(begin)
     // shifted ~130KB per message once at capacity).
+    static constexpr size_t kMdBufferCap = 4096;
     u64 md_seq_ = 1;
-    std::array<std::pair<u64, Event>, 4096> md_ring_{};
+    std::array<std::pair<u64, Event>, kMdBufferCap> md_ring_{};
     size_t md_head_ = 0;  // index of the OLDEST entry
     size_t md_count_ = 0;
-    static constexpr size_t kMdBufferCap = 4096;
     // oldest->newest view of the ring (snapshot serialization + gap_recover)
     std::vector<std::pair<u64, Event>> md_ring_dump() const;
     void md_ring_push(u64 seq, const Event& e);
@@ -305,6 +300,8 @@ private:
     RunStats stats_;
 
     void jappend(const Event& e);
+    Status open_journal(bool exclusive);
+    void refresh_stats();
     void schedule_seed_events();
     // record one completed order's stage deltas into the RunStats histograms
     void note_stage_trace(u64 order_id, LogicalNs match_t, LogicalNs fill_t);

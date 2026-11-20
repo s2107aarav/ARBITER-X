@@ -61,9 +61,11 @@ bool apply_f64(WorldConfig& c, const std::string& k, double v) {
     else if (k == "md_channel.corrupt_rate") c.md_channel.corrupt_rate = v;
     else if (k == "order_channel.loss_rate") c.order_channel.loss_rate = v;
     else if (k == "order_channel.dup_rate") c.order_channel.dup_rate = v;
+    else if (k == "order_channel.burst_loss_rate") c.order_channel.burst_loss_rate = v;
     else if (k == "order_channel.corrupt_rate") c.order_channel.corrupt_rate = v;
     else if (k == "exec_channel.loss_rate") c.exec_channel.loss_rate = v;
     else if (k == "exec_channel.dup_rate") c.exec_channel.dup_rate = v;
+    else if (k == "exec_channel.burst_loss_rate") c.exec_channel.burst_loss_rate = v;
     else if (k == "exec_channel.corrupt_rate") c.exec_channel.corrupt_rate = v;
     else if (k == "sim.provider_arrival_per_ms") c.sim.provider_arrival_per_ms = v;
     else if (k == "sim.taker_arrival_per_ms") c.sim.taker_arrival_per_ms = v;
@@ -146,7 +148,6 @@ bool apply_key(WorldConfig& c, const std::string& k, const std::string& raw, std
         }
         return apply_f64(c, k, v);
     }
-    probe = c;
     if (apply_i64(probe, k, 0)) {
         i64 v = 0;
         if (!parse_i64(v)) { err = k + "=" + raw; return false; }
@@ -167,13 +168,11 @@ bool apply_key(WorldConfig& c, const std::string& k, const std::string& raw, std
         }
         return apply_i64(c, k, v);
     }
-    probe = c;
     if (apply_i64_net(probe, k, 0)) {
         i64 v = 0;
         if (!parse_i64(v) || v < 0) { err = k + "=" + raw; return false; }
         return apply_i64_net(c, k, v);
     }
-    probe = c;
     if (apply_u64_net(probe, k, 0)) {
         u64 v = 0;
         if (!parse_u64(v) ||

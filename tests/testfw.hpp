@@ -40,7 +40,7 @@ inline int run_all(int argc, char** argv) {
         if (current_failed()) ++failed;
     }
     std::printf("%zu test(s) run, %zu failed\n", ran, failed);
-    return failed == 0 ? 0 : 1;
+    return ran && !failed ? 0 : 1;
 }
 
 }  // namespace testfw

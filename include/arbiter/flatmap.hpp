@@ -1,7 +1,6 @@
 #pragma once
-// Fixed-capacity open-addressing hash map (u64 key -> u64 value) with linear
-// probing and backward-shift deletion. Preallocated: inserts and erases
-// perform NO allocation once constructed. Key 0 is reserved as the empty
+// Open-addressing hash map with linear probing and backward-shift deletion.
+// reserve() provides headroom for nonallocating insert_prechecked() calls. Key 0 is reserved as the empty
 // marker (order ids are guaranteed >= 1 by the domain bounds).
 //
 // Used for the optimized book's order-id index so the matching hot path is
@@ -11,6 +10,7 @@
 #include "arbiter/rng.hpp"
 #include "arbiter/types.hpp"
 
+#include <bit>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -24,10 +24,11 @@ public:
     void reset(size_t cap_pow2) {
         // the probe math requires a power-of-two capacity; round up so a
         // non-pow2 argument cannot silently corrupt the mask
-        size_t cap = 1;
-        while (cap < cap_pow2 && cap < (size_t{1} << 62)) cap <<= 1;
-        keys_.assign(cap, 0);
-        vals_.assign(cap, 0);
+        if (cap_pow2 > keys_.max_size()) throw std::length_error("FlatIdMap capacity overflow");
+        const size_t cap = std::bit_ceil(cap_pow2);
+        std::vector<u64> keys(cap), vals(cap);
+        keys_.swap(keys);
+        vals_.swap(vals);
         mask_ = cap - 1;
         size_ = 0;
     }
@@ -66,16 +67,11 @@ public:
     // must not allocate call reserve() first and use insert_prechecked().
     void insert(u64 key, u64 val) {
         if (key == 0) return;
-        {
-            u64* existing = find(key);
-            if (existing) {
-                *existing = val;
-                return;
-            }
+        if (auto* existing = find(key)) {
+            *existing = val;
+            return;
         }
-        const size_t cap = mask_ + 1;
-        const size_t threshold = (cap / 10) * 7 + ((cap % 10) * 7) / 10;
-        if (size_ + 1 > threshold) grow();
+        reserve(size_ + 1);
         insert_prechecked(key, val);
     }
 
@@ -143,12 +139,6 @@ public:
     }
 
 private:
-    void grow() {
-        if (mask_ + 1 > std::numeric_limits<size_t>::max() / 2)
-            throw std::length_error("FlatIdMap capacity overflow");
-        rehash((mask_ + 1) * 2);
-    }
-
     void rehash(size_t cap) {
         // Build the replacement table before touching the live one.  A
         // failed allocation during reserve/growth must leave the index fully

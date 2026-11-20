@@ -28,15 +28,15 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 | cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
-| md0.000 | md+0,dec+4000,ord+4000 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.125 | md+1000,dec+3500,ord+3500 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.250 | md+2000,dec+3000,ord+3000 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.375 | md+3000,dec+2500,ord+2500 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.500 | md+4000,dec+2000,ord+2000 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.625 | md+5000,dec+1500,ord+1500 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.750 | md+6000,dec+1000,ord+1000 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md0.875 | md+7000,dec+500,ord+500 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
-| md1.000 | md+8000,dec+0,ord+0 | 168.8 | 171.9 | +0.98 | 0.0 | 0.0 |
+| md0.000 | md+0,dec+4000,ord+4000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.125 | md+1000,dec+3500,ord+3500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.250 | md+2000,dec+3000,ord+3000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.375 | md+3000,dec+2500,ord+2500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.500 | md+4000,dec+2000,ord+2000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.625 | md+5000,dec+1500,ord+1500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.750 | md+6000,dec+1000,ord+1000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.875 | md+7000,dec+500,ord+500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md1.000 | md+8000,dec+0,ord+0 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
 
 ## Paired contrasts (MM PnL, b − a, per seed)
 
@@ -54,10 +54,10 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 - primary contrast (md0.000 -> md1.000): mean paired MM PnL diff +0.0 ticks*qty (per-lot +0.00), Holm p=1.0000, not significant
 - economic materiality (primary): not material (threshold 1.00 ticks*qty/lot)
-- MM filled lots across the slice: 171.9 (md share 1) vs 171.9 (md share 0): fill mechanics invariant to placement
+- MM filled lots across the slice: 168.8 (md share 1) vs 168.8 (md share 0): fill mechanics invariant to placement
 - taker (momentum) PnL across the slice: 0.0 -> 0.0 (invariant)
 - taker primary-contrast paired PnL diff: +0.0 (se 0.0, perm p=1.0000) — not significant
-- H0 at the primary contrast: NOT REJECTED (placement effect small and not significant at this budget/regime — a valid negative result)
+- The primary contrast is inconclusive after Holm correction. The point estimate falls below the materiality threshold.
 
 ## Falsification status
 

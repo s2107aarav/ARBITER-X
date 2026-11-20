@@ -47,23 +47,17 @@ World::World(const WorldConfig& cfg, u64 master_seed, WorldObserver* observer)
       order_ch_(2, cfg.order_channel, master_seed),
       exec_ch_(3, cfg.exec_channel, master_seed),
       corrupt_rng_(Rng::stream(master_seed, 0x4300'5250'4E47ull)) {
-    // A degenerate configuration is a PROGRAMMING/CLI error, not a runtime
-    // condition: reject it loudly (validate_world_config is the documented
-    // entry point CLIs call first; this backstop keeps direct construction
-    // honest without aborting the process).
-    const std::string invalid = validate_world_config(cfg_);
-    if (!invalid.empty()) throw std::invalid_argument("arbiter: invalid WorldConfig: " + invalid);
-    if (cfg_.journal_events) {
-        std::string path = cfg_.journal_path.empty()
-                               ? "artifacts/world_" + std::to_string(master_seed_) + ".journal"
-                               : cfg_.journal_path;
-        auto w = JournalWriter::create(path, master_seed_, cfg_hash_);
-        if (!w)
-            throw std::runtime_error("arbiter: cannot create journal " + path + " (" +
-                                     std::string(to_cstr(w.status.code)) + ")");
-        journal_ = std::make_unique<JournalWriter>(std::move(w.value));
-        journal_path_ = path;
-    }
+    if (cfg_.journal_events)
+        journal_path_ = cfg_.journal_path.empty() ? "artifacts/world_" + std::to_string(master_seed_) + ".journal"
+                                                  : cfg_.journal_path;
+}
+
+Status World::open_journal(bool exclusive) {
+    if (journal_path_.empty() || journal_) return good();
+    auto writer = JournalWriter::create(journal_path_, master_seed_, cfg_hash_, exclusive);
+    if (!writer) return writer.status;
+    journal_ = std::make_unique<JournalWriter>(std::move(writer.value));
+    return good();
 }
 
 World::~World() = default;
@@ -101,6 +95,8 @@ u64 World::schedule(LogicalNs t, u8 rank, EvType type, u64 a, u64 b, i64 p) {
 
 RunStats World::run(u64 max_additional_events) {
     const auto t0 = std::chrono::steady_clock::now();
+    if (const Status st = open_journal(false); !st)
+        throw std::runtime_error("arbiter: cannot create journal " + journal_path_ + " (" + to_cstr(st.code) + ")");
     if (!started_) {
         schedule_seed_events();
         started_ = true;
@@ -142,12 +138,23 @@ RunStats World::run(u64 max_additional_events) {
         }
     }
 
-    stats_.events_processed = events_;
-    stats_.logical_end = now_;
+    refresh_stats();
     stats_.wall_ns =
         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now() - t0)
                              .count());
+    if (journal_) {
+        if (const Status st = journal_->sync(); !st)
+            throw std::runtime_error("arbiter: journal sync failed (" +
+                                     std::string(to_cstr(st.code)) + ")");
+    }
+    return stats_;
+}
+
+void World::refresh_stats() {
+    stats_.hash_every = cfg_.hash_every_events;
+    stats_.events_processed = events_;
+    stats_.logical_end = now_;
     const Price bb = book_.best_bid(), ba = book_.best_ask();
     stats_.final_mid = (bb && ba) ? (bb + ba) / 2 : (bb ? bb : ba);
     stats_.mm_inventory = mm_.inventory();
@@ -173,14 +180,11 @@ RunStats World::run(u64 max_additional_events) {
             stats_.mom_auth_filled_qty = e.filled_qty;
         }
     }
-    stats_.risk_accepted = risk_.state().accepted;
-    stats_.risk_rejected = risk_.state().rejected;
-    if (journal_) {
-        if (const Status st = journal_->sync(); !st)
-            throw std::runtime_error("arbiter: journal sync failed (" +
-                                     std::string(to_cstr(st.code)) + ")");
-    }
-    return stats_;
+    stats_.risk_accepted = stats_.risk_rejected = 0;
+    risk_.for_each_state([&](u32, const RiskState& state) {
+        stats_.risk_accepted = saturating_add_u64(stats_.risk_accepted, state.accepted);
+        stats_.risk_rejected = saturating_add_u64(stats_.risk_rejected, state.rejected);
+    });
 }
 
 // ---------------- event processing ----------------
@@ -193,7 +197,8 @@ void World::process(const WorldEvent& ev) {
                 // Interference control: bots see the touch EXCLUDING strategy
                 // orders. Matching and trade feedback remain active
                 // (docs/COUNTERFACTUALS.md).
-                sim_.observe_shadow(shadow_best_bid(), shadow_best_ask());
+                sim_.observe_shadow(book_.best_excluding(Side::Buy, gateway_known_ids_),
+                                    book_.best_excluding(Side::Sell, gateway_known_ids_));
             } else {
                 sim_.observe(book_.best_bid(), book_.best_ask());
             }
@@ -569,7 +574,7 @@ void World::enter_book(Order o, LogicalNs t) {
     if (rests) {
         const Order* ro = book_.find(o.id);
         if (ro) mds.push_back(ev_md_new(0, t, o.id, o.side, o.price, ro->leaves));
-        if (o.tif == Tif::GTD && o.expiry > t) schedule(o.expiry, RankGtd, EvGtdExpiry, o.id, 0, 0);
+        if (ro && o.tif == Tif::GTD && o.expiry > t) schedule(o.expiry, RankGtd, EvGtdExpiry, o.id, 0, 0);
     }
     publish_md(mds, t);
 
@@ -586,7 +591,7 @@ void World::enter_book(Order o, LogicalNs t) {
         n.fill.qty = taker_canceled;
         send_notify(std::move(n), t);
     }
-    if (!rests) {
+    if (!book_.has(o.id)) {
         // The order is exchange-terminal (fully filled, remainder canceled,
         // or FOK). When no fill report is still in flight, trace state dies
         // now; otherwise the pending fill reports clean up on delivery.
@@ -598,7 +603,7 @@ void World::cancel_in_book(u64 order_id, LogicalNs t) {
     const Order* o = book_.find(order_id);
     if (!o) return;  // already gone (filled / unknown): nothing to publish
     const u32 owner = o->account;
-    const Side side = observer_ ? o->side : Side{};
+    const Side side = o->side;
     if (Status s = book_.cancel(order_id); s) {
         if (observer_) observer_->book(observation(), order_id, side, {}, book_, true);
         jappend(ev_book_cancel(0, t, order_id));
@@ -778,7 +783,7 @@ void World::gap_recover() {
         deliver_expected();
         return;
     }
-    for (u64 seq = expected_md_seq_; seq < md_seq_ && seq < oldest_buffered + kMdBufferCap; ++seq) {
+    for (u64 seq = expected_md_seq_; seq < md_seq_; ++seq) {
         if (pending_md_.count(seq)) continue;  // already arrived client-side
         if (const Event* ev = md_ring_find(seq)) {
             // deterministic recovery path: a fresh valid RETRANSMIT packet
@@ -798,33 +803,6 @@ void World::gap_recover() {
             ++stats_.md_recovered;
         }
     }
-}
-
-// ---- interference-control shadow touch ----
-// Strategy resting orders are exactly the book ids the gateway accepted
-// (gateway_known_ids_); bots' ids never enter that set. The shadow best is
-// the best price at which a NON-strategy order rests (0 if none). The
-// canonical ladder lists bids best-first (descending) and asks best-first
-// (ascending), one scan order covers both sides.
-namespace {
-Price shadow_best(const std::vector<LadderLevel>& levels,
-                  const std::unordered_set<u64>& strategy_ids) {
-    for (const LadderLevel& lvl : levels) {
-        for (const LadderOrder& o : lvl.orders)
-            if (strategy_ids.count(o.id) == 0) return lvl.price;
-    }
-    return 0;
-}
-}  // namespace
-
-Price World::shadow_best_bid() const {
-    const LadderView lv = book_.to_ladder();
-    return shadow_best(lv.bids, gateway_known_ids_);
-}
-
-Price World::shadow_best_ask() const {
-    const LadderView lv = book_.to_ladder();
-    return shadow_best(lv.asks, gateway_known_ids_);
 }
 
 void World::deliver_fill(const Fill& f, LogicalNs t) {
@@ -872,7 +850,7 @@ void World::deliver_fill(const Fill& f, LogicalNs t) {
     // probe carries the account so samples land in the right archetype
     // histogram.
     const auto schedule_markouts = [&](u32 account, Side ours, Price fill_px) {
-        if (markouts_.size() > (1u << 20)) return;  // bounded
+        if (markouts_.size() >= (1u << 20)) return;  // bounded
         MarkoutProbe p;
         p.fill_t = t;
         p.fill_px = fill_px;
@@ -890,7 +868,7 @@ void World::deliver_fill(const Fill& f, LogicalNs t) {
         schedule_markouts(cfg_.mm.account, f.taker_side, f.price);
     }
     if (f.maker_account == cfg_.mm.account) {
-        mm_.on_fill(f.maker_order_id, f.maker_side, f.price, f.qty);
+        mm_.on_fill(f.maker_order_id, f.maker_side, f.price, f.qty, Liquidity::Maker);
         note_latency(f.maker_order_id);
         schedule_markouts(cfg_.mm.account, f.maker_side, f.price);
     }
@@ -927,7 +905,7 @@ void World::route_intent(const StrategyAction& act, LogicalNs t) {
     const Order* intent = is_cancel ? nullptr : &act.ord;
     const u64 order_id = is_cancel ? act.cancel_id : act.ord.id;
     if (d.drop) {
-        if (observer_) observer_->frame(observation(), {2, m.transport_seq, order_id, t, m.frame,
+        if (observer_) observer_->frame(observation(), {2, m.transport_seq, order_id, depart_t, m.frame,
                                                         true, false, 0, static_cast<u8>(is_cancel), intent});
         ++stats_.order_frames_dropped;
         ++stats_.wire_frames_encoded;
@@ -959,7 +937,7 @@ void World::route_intent(const StrategyAction& act, LogicalNs t) {
     const bool cancel = m.is_cancel;
     const size_t idx = inflight_.size();
     inflight_.push_back(std::move(m));
-    const u64 arrival = schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency), d.delay_ns),
+    const u64 arrival = schedule(add_time_checked(add_time_checked(depart_t, d.delay_ns),
                               d.reorder_extra_ns),
              RankGateway,
              EvGatewayArrival, cancel ? 1 : 0, idx, 0);
@@ -975,8 +953,7 @@ void World::route_intent(const StrategyAction& act, LogicalNs t) {
     // is counted when the receiver SUPPRESSES it (order_frames_duplicated),
     // not here: this counter is receiver-side, like exec_frames_duplicated.
     if (d.duplicate) {
-        const u64 duplicate = schedule(add_time_checked(add_time_checked(add_time_checked(t, decision_latency),
-                                                   d.dup_extra_ns),
+        const u64 duplicate = schedule(add_time_checked(add_time_checked(depart_t, d.dup_extra_ns),
                                   d.reorder_extra_ns),
                  RankGateway,
                  EvGatewayArrival, cancel ? 1 : 0, idx, 0);

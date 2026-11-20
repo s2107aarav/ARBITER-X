@@ -28,12 +28,12 @@ public:
     static Config from_string(std::string_view text, Status* st = nullptr);
     static Result<Config> from_file(const std::string& path);
 
-    bool get_bool(std::string_view dotted, bool dflt) const noexcept;
-    i64 get_i64(std::string_view dotted, i64 dflt) const noexcept;
-    u64 get_u64(std::string_view dotted, u64 dflt) const noexcept;
-    double get_f64(std::string_view dotted, double dflt) const noexcept;
-    std::string get_str(std::string_view dotted, std::string dflt) const noexcept;
-    bool has(std::string_view dotted) const noexcept;
+    bool get_bool(std::string_view dotted, bool dflt) const;
+    i64 get_i64(std::string_view dotted, i64 dflt) const;
+    u64 get_u64(std::string_view dotted, u64 dflt) const;
+    double get_f64(std::string_view dotted, double dflt) const;
+    std::string get_str(std::string_view dotted, std::string dflt) const;
+    bool has(std::string_view dotted) const;
 
     const std::vector<std::pair<std::string, std::string>>& entries() const noexcept { return entries_; }
 

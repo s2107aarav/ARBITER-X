@@ -1,5 +1,5 @@
 #include "arbiter/world_snapshot.hpp"
-#include "arbiter/crc32.hpp"
+#include "../journal/snapshot_io.hpp"
 #include "arbiter/errors.hpp"
 
 #include <algorithm>
@@ -12,7 +12,6 @@ namespace arbiter {
 
 namespace {
 constexpr char kMagic[4] = {'A', 'R', 'X', 'W'};
-constexpr size_t kHeaderSize = 16;  // magic 4 + version 4 + body_len 4 + crc 4
 // NOTE: format v3 adds sim.last_bb/last_ba/now (touch used by provider bots).
 
 // ---- helpers ----
@@ -460,55 +459,14 @@ Status write_world_snapshot(const std::string& path, const WorldSnapshot& s) {
     w.put_u64(s.stats.wire_frames_decoded);
     w.put_u64(s.stats.wire_frames_corrupted);
 
-    // file framing
-    ByteWriter head;
-    head.put_bytes(kMagic, 4);
-    head.put_u32(s.format_version);
-    if (w.size() > std::numeric_limits<u32>::max()) return fail(Errc::Capacity, w.size());
-    head.put_u32(static_cast<u32>(w.size()));
-    head.put_u32(crc32(w.data().data(), w.size()));
-
-    std::FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) return fail(Errc::IoError, static_cast<u64>(errno));
-    const std::string& h = head.data();
-    const std::string& b = w.data();
-    const bool ok = std::fwrite(h.data(), 1, h.size(), f) == h.size() &&
-                    std::fwrite(b.data(), 1, b.size(), f) == b.size();
-    const bool closed = std::fclose(f) == 0;
-    if (!ok || !closed) return fail(Errc::IoError, 1);
-    return good();
+    return snapshot_io::write(path, kMagic, kWorldSnapshotVersion, w.data());
 }
 
 Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return ErrT<WorldSnapshot>(Errc::NotFound, static_cast<u64>(errno));
-    std::string all;
-    char buf[8192];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
-        all.append(buf, n);
-        if (n < sizeof buf || std::ferror(f) || std::feof(f)) break;
-    }
-    const bool read_error = std::ferror(f) != 0;
-    std::fclose(f);
-    if (read_error) return ErrT<WorldSnapshot>(Errc::IoError);
-
-    if (all.size() < kHeaderSize) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 0);
-    const u8* p = reinterpret_cast<const u8*>(all.data());
-    if (std::memcmp(p, kMagic, 4) != 0) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 0);
-    ByteReader hr(p + 4, 12);
-    const u32 version = hr.get_u32();
-    const u32 body_len = hr.get_u32();
-    const u32 crc = hr.get_u32();
-    if (!hr.ok()) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 1);
-    if (version != kWorldSnapshotVersion) return ErrT<WorldSnapshot>(Errc::Unsupported, version);
-    if (all.size() != kHeaderSize + body_len) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 2);
-    if (crc32(p + kHeaderSize, body_len) != crc)
-        return ErrT<WorldSnapshot>(Errc::ChecksumMismatch, 0);
-
-    ByteReader r(p + kHeaderSize, body_len);
+    auto body = snapshot_io::read(path, kMagic, kWorldSnapshotVersion, Errc::Unsupported);
+    if (!body) return ErrT<WorldSnapshot>(body.status.code, body.status.context);
+    ByteReader r(body.value);
     WorldSnapshot s;
-    s.format_version = version;
     s.config_hash = r.get_u64();
     s.master_seed = r.get_u64();
     s.state_hash = r.get_u64();
@@ -681,9 +639,9 @@ Result<WorldSnapshot> read_world_snapshot(const std::string& path) {
     }
     if (!r_evmap(s.pending_md)) return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 18);
 
-    // transport sequences + receiver dedupe state (v12)
-    s.order_seq = r.get_u64();
-    s.exec_seq = r.get_u64();
+    // v12+ repeats these counters. Both copies describe the same stream.
+    if (r.get_u64() != s.order_seq || r.get_u64() != s.exec_seq)
+        return ErrT<WorldSnapshot>(Errc::SnapshotInvalid, 33);
     auto r_seqset = [&](std::vector<u64>& out, u64 cap) -> bool {
         const u64 n = r.get_u64();
         if (!r.ok() || n > cap || n > r.remaining() / 8) return false;

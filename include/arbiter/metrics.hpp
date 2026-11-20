@@ -78,13 +78,13 @@ struct RunStats {
     u64 mm_auth_filled_qty = 0, mom_auth_filled_qty = 0;
     u64 mm_quote_updates = 0;
     // queue-model accuracy (same unit: LOTS, on both sides):
-    // inference = queue-model estimate; real = exchange-authoritative fills;
+    // inference = queue-model estimate; real = delivered fill lots; mm_auth_filled_qty counts every matched lot;
     // ambiguous = trade lots the model structurally CANNOT attribute (raced
     // our own MdNew confirmation), the honest uncertainty bound on inference
     u64 mm_inference_fill_qty = 0;
     u64 mm_real_filled_qty = 0;
     u64 mm_ambiguous_fill_qty = 0;
-    u64 mom_filled_qty = 0;  // taker-archetype fill LOTS (authoritative)
+    u64 mom_filled_qty = 0;  // delivered taker-archetype fill lots
     Price final_mid = 0;
     // drawdown: peak-to-trough of the MM's marked PnL across the fill
     // timeline (integer ticks*qty; peak marked at each fill delivery)

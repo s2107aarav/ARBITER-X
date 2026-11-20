@@ -4,6 +4,7 @@
 #include "arbiter/opt_book.hpp"
 #include "arbiter/ref_book.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -75,7 +76,7 @@ Order order_from_replace_event(const Event& e) {
 // levels) so the restored book preserves price-time priority and exact
 // leaves/qty (partial fills included). A corrupt snapshot (duplicate ids /
 // invalid entries) must fail the replay loudly rather than silently skipping orders.
-Status restore_ladder(Replayer& rp, const LadderView& ladder, std::vector<Fill>& scratch) {
+Status restore_ladder(Replayer& rp, const LadderView& ladder) {
     const auto side_run = [&](const std::vector<LadderLevel>& levels, Side s) -> Status {
         for (const auto& lvl : levels) {
             for (const auto& lo : lvl.orders) {
@@ -87,7 +88,6 @@ Status restore_ladder(Replayer& rp, const LadderView& ladder, std::vector<Fill>&
                 o.price = lvl.price;
                 o.qty = lo.qty;
                 o.leaves = lo.leaves;
-                scratch.clear();
                 if (Status st = rp.rest_order(o); !st) return st;
             }
         }
@@ -124,7 +124,8 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
         skip_through_seq = base->last_event_seq;
         rep.final_seq = skip_through_seq;
         rep.logical_t = base->logical_t;
-        if (Status st = restore_ladder(*replayer, base->ladder, fills); !st) {
+        rep.next_order_id = std::max(rep.next_order_id, base->next_order_id);
+        if (Status st = restore_ladder(*replayer, base->ladder); !st) {
             rep.status = st;
             return rep;
         }
@@ -151,7 +152,10 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
         const Event& e = evr.value;
         last_seen_seq = e.seq;
         rep.events_seen++;
-        if (until_seq != 0 && e.seq > until_seq) break;
+        if (e.type == EvType::BookAdd || e.type == EvType::BookReplace) {
+            const u64 id = e.type == EvType::BookAdd ? e.a : e.b;
+            if (id <= DomainBounds::kMaxOrderId) rep.next_order_id = std::max(rep.next_order_id, id + 1);
+        }
         if (e.seq <= skip_through_seq) continue;
         rep.final_seq = e.seq;
         rep.logical_t = e.t;
@@ -191,16 +195,18 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
             // Cross-check the K recomputed fills against the K journaled
             // TradePrints that immediately follow this input event.
             for (const Fill& f : fills) {
+                if (until_seq && last_seen_seq == until_seq) break;
                 auto pr = r.next();
                 if (!pr) {
                     rep.trade_mismatches++;
-                    rep.status = Status{Errc::JournalCorrupt, 0};
+                    rep.status = r.failed() ? r.error() : fail(Errc::JournalCorrupt, r.offset());
                     break;
                 }
                 rep.events_seen++;
                 last_seen_seq = pr.value.seq;
                 rep.final_seq = pr.value.seq;
-                if (pr.value.type != EvType::TradePrint || pr.value.a != f.taker_order_id ||
+                if (pr.value.type != EvType::TradePrint || pr.value.t != f.t ||
+                    pr.value.account != f.taker_account || pr.value.a != f.taker_order_id ||
                     pr.value.b != f.maker_order_id || pr.value.c != f.qty || pr.value.p != f.price) {
                     rep.trade_mismatches++;
                 }

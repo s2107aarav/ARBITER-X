@@ -148,7 +148,8 @@ AX_TEST(snapshot_decoder_rejects_checksummed_truncation) {
     CHECK(file); if (!file) return;
     std::string bytes;
     char buffer[4096]; size_t count = 0;
-    while ((count = std::fread(buffer, 1, sizeof buffer, file)) != 0) bytes.append(buffer, count);
+    do { count = std::fread(buffer, 1, sizeof buffer, file); bytes.append(buffer, count); } while (count == sizeof buffer);
+    CHECK(!std::ferror(file));
     std::fclose(file);
     const auto snapshot = world.capture_snapshot();
     ByteWriter sim_prefix;
@@ -244,18 +245,12 @@ AX_TEST(worldrestore_randomized_fuzz) {
             done = w->stats().events_processed;
             WorldSnapshot snap = w->capture_snapshot();
             // destroy the world and continue in a freshly restored one
-            std::unique_ptr<World> w2(new World(cfg, seed));
-            CHECK(w2->restore_snapshot(snap, cfg, true));
-            if (done >= total) {
-                RunStats s2 = w2->run(0);
-                CHECK_EQ(w2->state_hash(), ref_hash);
-                check_stats_equal(ref_stats, s2);
-            } else {
-                w2->run(total - done);
-                done = w2->stats().events_processed;
-                w = std::move(w2);
-            }
+            w = std::make_unique<World>(cfg, seed);
+            CHECK(w->restore_snapshot(snap, cfg, true));
+            if (testfw::current_failed()) return;
         }
+        check_stats_equal(ref_stats, w->run(0));
+        CHECK_EQ(w->state_hash(), ref_hash);
         if (testfw::current_failed()) return;
     }
 }
@@ -285,8 +280,11 @@ AX_TEST(worldrestore_rejects_mismatched_config_and_corruption) {
     const auto size = std::filesystem::file_size(path);
     {
         std::FILE* f = std::fopen(path.c_str(), "r+b");
-        std::fseek(f, static_cast<long>(size / 2), SEEK_SET);
-        std::fputc(0x5A, f);
+        CHECK(f); if (!f) return;
+        const long offset = static_cast<long>(size / 2);
+        CHECK(std::fseek(f, offset, SEEK_SET) == 0);
+        const int byte = std::fgetc(f);
+        CHECK(byte != EOF && std::fseek(f, offset, SEEK_SET) == 0 && std::fputc(byte ^ 1, f) != EOF);
         std::fclose(f);
     }
     auto bad = read_world_snapshot(path);
@@ -515,8 +513,9 @@ AX_TEST(snapshot_rejects_wrong_version_and_corrupt_body) {
             CHECK(!"open failed");
             return;
         }
-        std::fseek(f, 64, SEEK_SET);
-        std::fputc(std::fgetc(f) ^ 0x40, f);
+        CHECK_EQ(std::fseek(f, 64, SEEK_SET), 0);
+        const int byte = std::fgetc(f);
+        CHECK(byte != EOF && std::fseek(f, 64, SEEK_SET) == 0 && std::fputc(byte ^ 0x40, f) != EOF);
         std::fclose(f);
         CHECK(!read_world_snapshot("artifacts/test_cl_snap.wsnap"));
     }

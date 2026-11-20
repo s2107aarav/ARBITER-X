@@ -565,7 +565,11 @@ AX_TEST(replay_failure_status_is_preserved) {
         for(auto impl : {BookImpl::Reference,BookImpl::Optimized}) {
             const auto replay=replay_journal(path,impl);
             CHECK(!replay.status);
-            if(scenario==0) CHECK_EQ(replay.trade_mismatches,1u);
+            if(scenario==0) {
+                CHECK_EQ(replay.trade_mismatches,1u);
+                const auto prefix = replay_journal(path, impl, 2);
+                CHECK(prefix.status && prefix.final_seq == 2 && prefix.events_seen == 2 && prefix.next_order_id == 3);
+            }
             if(scenario==1) CHECK_EQ(replay.status.code,Errc::JournalCorrupt);
             if(scenario==2) CHECK_EQ(replay.status.code,Errc::ProtocolInvalid);
             if(scenario==3) {

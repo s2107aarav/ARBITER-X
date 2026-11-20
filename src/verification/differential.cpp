@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <unordered_set>
 
 namespace arbiter {
@@ -97,9 +98,9 @@ Report run_differential(const std::vector<Op>& ops, const Options& opts) {
             ++rep.best_mismatches;
             diverge("best price mismatch", ref.best_bid());
         } else {
-            const u64 href = ref.state_hash();
-            const u64 hopt = opt.state_hash();
-            if (href != hopt || !ladders_equal(ref.to_ladder(), opt.to_ladder())) {
+            const auto ref_ladder = ref.to_ladder(), opt_ladder = opt.to_ladder();
+            const u64 href = canonical_book_hash(ref_ladder);
+            if (href != canonical_book_hash(opt_ladder) || !ladders_equal(ref_ladder, opt_ladder)) {
                 ++rep.ladder_mismatches;
                 diverge("ladder view/hash mismatch", href);
             }
@@ -180,7 +181,7 @@ std::vector<Op> minimize_ops(const std::vector<Op>& ops,
                              const std::function<bool(const std::vector<Op>&)>& fails) {
     if (!fails(ops)) return {};
     std::vector<Op> current = ops;
-    size_t chunk = current.size() / 2;
+    size_t chunk = std::max<size_t>(1, current.size() / 2);
     while (chunk >= 1) {
         bool changed = false;
         // try removing chunks of size `chunk`
@@ -284,11 +285,11 @@ std::string ops_to_text(const std::vector<Op>& ops) {
     char buf[256];
     for (const Op& op : ops) {
         const char* k = op.kind == Op::Kind::Add ? "A" : (op.kind == Op::Kind::Cancel ? "C" : "R");
-        std::snprintf(buf, sizeof buf, "%s %llu %u %u %u %u %lld %llu %llu\n", k,
+        std::snprintf(buf, sizeof buf, "%s %llu %u %u %u %u %lld %llu %llu %lld %lld\n", k,
                       (unsigned long long)op.ord.id, (unsigned)op.ord.account,
                       (unsigned)op.ord.side, (unsigned)op.ord.type, (unsigned)op.ord.tif,
                       (long long)op.ord.price, (unsigned long long)op.ord.qty,
-                      (unsigned long long)op.target);
+                      (unsigned long long)op.target, (long long)op.ord.arrival, (long long)op.ord.expiry);
         out += buf;
     }
     return out;
@@ -323,9 +324,13 @@ Result<std::vector<Op>> ops_from_text(const std::string& text) {
         u32 acct = 0, side = 0, otype = 0, tif = 0;
         i64 price = 0;
         if (!number(id) || !number(acct) || !number(side) || !number(otype) ||
-            !number(tif) || !number(price) || !number(qty) || !number(target) || !token().empty())
+            !number(tif) || !number(price) || !number(qty) || !number(target))
             return ErrT<std::vector<Op>>(Errc::ProtocolInvalid, ops.size());
         Op op;
+        // Original nine-field corpus records used zero arrival and expiry.
+        if (line.find_first_not_of(" \t\r") != std::string_view::npos &&
+            (!number(op.ord.arrival) || !number(op.ord.expiry) || !token().empty()))
+            return ErrT<std::vector<Op>>(Errc::ProtocolInvalid, ops.size());
         op.target = target;
         if (kind == "A") op.kind = Op::Kind::Add;
         else if (kind == "C") op.kind = Op::Kind::Cancel;
@@ -390,16 +395,14 @@ SearchResult adversarial_search(u64 base_seed, u32 iterations, u32 ops_per_run,
                     return r.diverged;
                 };
                 res.minimized_reproducer = minimize_ops(ops, fails);
-                std::error_code ec;
-                std::filesystem::create_directories(corpus_dir, ec);
+                std::filesystem::create_directories(corpus_dir);
                 const std::string name = corpus_dir + "/adv_" + std::to_string(base_seed) + "_" +
                                          std::to_string(rep.div.op_index) + ".ops";
-                std::FILE* f = std::fopen(name.c_str(), "wb");
-                if (f) {
-                    const std::string text = ops_to_text(res.minimized_reproducer);
-                    std::fwrite(text.data(), 1, text.size(), f);
-                    std::fclose(f);
-                }
+                std::ofstream file;
+                file.exceptions(std::ios::failbit | std::ios::badbit);
+                file.open(name, std::ios::binary);
+                file << ops_to_text(res.minimized_reproducer);
+                file.close();
                 break;
             }
         }

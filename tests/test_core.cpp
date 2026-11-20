@@ -61,10 +61,10 @@ AX_TEST(rng_mulhi_portable_matches_wide) {
         const u64 carry = mid < p2 ? (1ull << 32) : 0;
         const u64 split = p3 + (mid >> 32) + carry;
         CHECK_EQ(split, native);
-        if (testfw::current_failed()) return;
+        CHECK_EQ(Rng::mulhi64(x, n), native);
+#else
+        CHECK(Rng::mulhi64(x, n) < n);
 #endif
-        // and bounded() itself is Lemire over mulhi
-        CHECK(Rng::mulhi64(x, n) == Rng::mulhi64(x, n));  // purity sanity
     }
 }
 
@@ -105,6 +105,12 @@ AX_TEST(histogram_percentiles) {
     CHECK(s.p99 > 985 && s.p99 <= 1000);
     CHECK_EQ(s.mn, 1.0);
     CHECK_EQ(s.mx, 1000.0);
+    hist.reset();
+    const double m = std::numeric_limits<double>::max();
+    hist.record(m); hist.record(m);
+    CHECK_EQ(hist.mean(), m);
+    hist.reset(); hist.record(-m); hist.record(m);
+    CHECK_EQ(hist.percentile(0.5), 0.0);
 }
 
 AX_TEST(histogram_queries_do_not_change_future_sampling) {

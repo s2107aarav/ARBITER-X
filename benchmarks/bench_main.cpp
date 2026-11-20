@@ -292,7 +292,6 @@ void bench_journal() {
     std::printf("=== journal ===\n");
     const std::string path = "artifacts/bench.journal";
     std::filesystem::create_directories("artifacts");
-    std::remove(path.c_str());
     Event e;
     e.type = EvType::MdTrade;
     e.p = 1500;
@@ -301,25 +300,28 @@ void bench_journal() {
     Histogram h_write(1u << 20);
     {
         auto w = JournalWriter::create(path, 1, 1);
+        if (!w) throw std::runtime_error("cannot create benchmark journal");
         for (u64 i = 0; i < n; ++i) {
             const u64 a = now_ns();
-            w.value.append(e);
+            if (!w.value.append(e)) throw std::runtime_error("benchmark append failed");
             h_write.record(static_cast<double>(now_ns() - a));
         }
-        w.value.sync();
+        if (!w.value.sync()) throw std::runtime_error("benchmark sync failed");
     }
     report("append+buffer event", h_write);
     Histogram h_read(1u << 20);
     {
         auto r = JournalReader::open(path);
+        if (!r) throw std::runtime_error("cannot open benchmark journal");
         u64 count = 0;
         while (r.value.has_next()) {
             const u64 a = now_ns();
             auto ev = r.value.next();
             h_read.record(static_cast<double>(now_ns() - a));
-            if (!ev) break;
+            if (!ev) throw std::runtime_error("benchmark replay failed");
             ++count;
         }
+        if (r.value.failed() || count != n) throw std::runtime_error("incomplete benchmark journal");
         std::printf("    replayed %llu events\n", (unsigned long long)count);
     }
     report("read+verify event", h_read);
@@ -445,7 +447,7 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 #endif
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     const char* suite = argc > 1 ? argv[1] : "all";
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--quick") == 0) {
@@ -481,4 +483,7 @@ int main(int argc, char** argv) {
     }
     std::printf("done.\n");
     return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "benchmark failed: %s\n", error.what());
+    return 1;
 }
