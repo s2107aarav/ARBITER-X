@@ -1,32 +1,36 @@
 # Flagship: latency-stage non-fungibility (fixed total budget)
 
-**This is a paired counterfactual estimate under the simulator's structural assumptions — not a causal claim about real markets.**
+This paired simulation study estimates effects within the model.
+
+Source revision `8daa6da97f840b67178dfc5b2e089e2cac225482` (clean), built with clang 17.0.0 (clang-1700.6.3.2) on arm64-apple.
 
 ## Research question
 
-For a FIXED total trader-side latency budget L = 8000 ns, does the ALLOCATION of L across (observation md_transit, decision, order_transit) change execution economics?
-
-H0: only the total matters (E[Y|allocation] = f(L)). H1: placement matters (stage marginal effects differ).
+Does shifting a fixed 8000 ns budget across observation, decision and order transit change mean market-maker marked PnL?
 
 ## Intervention
 
-ONE-DIMENSIONAL SLICE of the 3-stage allocation simplex: the md-share axis {0..1} with the action stages (decision, order_transit) split evenly — NOT the full simplex (interior decision/order trade-offs are not explored). Identical total in every cell, enforced by the typed `LatencyAllocation` invariant; engine-measured realized stage latencies recorded per cell.
+The allocation grid varies the observation share and divides the remainder between decision and order transit. Every configured allocation sums to the fixed budget. JSON reports measured publication-to-feed-arrival means for accepted MD packets excluding retransmissions. Decision-to-departure and departure-to-gateway means use delivered strategy fill legs with stage traces. Sample counts identify the two populations, and absent measurements are null. These separate means do not trace a single path.
 
 ## Market process
 
-flow_model=clustered (post-trade intensity boost + trade-sign persistence, k=0.90; a minimal self-exciting mechanism with a bit-exact Poisson null — NOT a Hawkes process)
+flow_model=clustered (post-trade intensity boost and trade-sign persistence, k=0.90)
 
-**Regime-contrast scope (limitation):** the two flow regimes differ in the taker process's dependence structure AND consequently in realized intensity and trade-sign runs. The clustered process can produce sign signals that activate the momentum strategy. The placebo therefore shows "allocation has no effect under THIS null market"; it does NOT isolate which aspect of the clustered process (dependence vs intensity) would drive any clustered-regime effect.
+The regime comparison jointly changes temporal dependence, realized intensity and trade-sign persistence. The Poisson control alone cannot identify the mechanism.
 
-## Replication
+## Replication and inference
 
-Seed is the unit of replication (independent worlds; within-world events are never treated as independent). Cells are PAIRED by seed (common random numbers): same master seed, same named streams.
+The 8 master seeds are the independent replication units. All cells use the same seeds and named streams for paired comparisons. The two-sided sign-flip test assumes the paired differences are invariant to independent sign changes under the null. Holm correction covers the 9 market-maker contrasts in this grid at family-wise alpha 0.05. The endpoints form the primary contrast. Intervals are descriptive, unadjusted normal approximations across seeds. The taker endpoint is exploratory.
+
+The exact test uses 256 sign assignments. The smallest possible Holm-adjusted p-value is 0.0703125, before any additional ties. This pilot cannot reject at family-wise alpha 0.05.
 
 ## Interference mode
 
 reactive (bots observe the live touch and react to strategy quotes; the measured effect includes market feedback — interference sensitivity is probed by re-running frozen)
 
-| cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
+PnL is marked from strategy-local cash and inventory at the horizon. Filled lots count delivered fill legs. Markouts average seed means with observed probes.
+
+| cell | configured allocation (ns) | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
 | md0.000 | md+0,dec+4000,ord+4000 | -208654.8 | 37224.0 | +0.33 | 77327.5 | 1835.2 |
 | md0.125 | md+1000,dec+3500,ord+3500 | -189187.1 | 39082.5 | +0.29 | 75542.0 | 1682.8 |
@@ -54,17 +58,15 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 - primary contrast (md0.000 -> md1.000): mean paired MM PnL diff -51026.1 ticks*qty (per-lot -1.35), Holm p=1.0000, not significant
 - economic materiality (primary): MATERIAL (threshold 1.00 ticks*qty/lot)
-- MM filled lots across the slice: 38322.6 (md share 1) vs 37224.0 (md share 0): placement changes fill mechanics
-- taker (momentum) PnL across the slice: 77327.5 -> 132426.5 (moves)
-- taker primary-contrast paired PnL diff: +55099.0 (se 91830.4, perm p=0.5547) — not significant
+- MM filled lots across the slice: 38322.6 (md share 1) vs 37224.0 (md share 0): sample means differ
+- taker (momentum) mean PnL across the slice: 77327.5 -> 132426.5
+- exploratory taker endpoint: mean paired PnL diff +55099.0 (raw sign-flip p=0.5547)
 - The primary contrast is inconclusive after Holm correction. The point estimate meets the materiality threshold.
 
-## Falsification status
+## Interpretation
 
-- Poisson null: run the same grid with `flow_model=poisson`. Interpretation scope: if an allocation effect existed in the null market it would indicate placement sensitivity WITHOUT clustered flow (mechanism contradiction); a null result here is necessary but NOT sufficient for the clustered-flow mechanism (the regimes also differ in intensity — see the regime-contrast scope above).
-- Interference: re-run with `bots_observe_shadow=true`; a large gap between reactive and frozen effects means the interpretation is unstable.
-- Kill conditions: no adjacent-pair materiality under clustered flow at the primary contrast; or materiality driven by one seed; or reference/optimized book disagreement (checked separately in the differential suite).
+Compare the Poisson and frozen-observation controls as sensitivity checks. Compare the per-lot point estimate with the planned economic threshold and its paired PnL result with the adjusted test. A non-rejection does not establish equivalence.
 
 ## Reproducibility
 
-`arbiter flagship --config <file>` re-runs this design; `arbiter flagship --reproduce <artifact.json>` verifies every recorded hash bit-for-bit. definition_hash covers the full design (grid, seeds, regime, horizon, thresholds).
+`arbiter flagship --reproduce results.json --report report.md` recomputes the outputs and compares their bytes. The recorded provenance is carried into the comparison. Verify it against the original clean build separately.
