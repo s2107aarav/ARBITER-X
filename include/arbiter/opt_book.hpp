@@ -54,8 +54,8 @@ public:
     Price best_bid() const noexcept { return best_bid_ < 0 ? 0 : best_bid_; }
     Price best_ask() const noexcept { return best_ask_ < 0 ? 0 : best_ask_; }
     Price best_excluding(Side side, const std::unordered_set<u64>& ids) const;
-    Qty total_bid_qty() const noexcept;
-    Qty total_ask_qty() const noexcept;
+    Qty total_bid_qty() const noexcept { return bid_qty_; }
+    Qty total_ask_qty() const noexcept { return ask_qty_; }
     size_t order_count() const noexcept { return index_.size(); }
     size_t level_count() const noexcept;
     u64 next_book_seq() const noexcept { return next_book_seq_; }
@@ -116,8 +116,10 @@ private:
     FlatIdMap index_{1};
     Price best_bid_ = kNoBid;
     Price best_ask_ = kNoAsk;
+    Qty bid_qty_ = 0, ask_qty_ = 0;
     u64 next_book_seq_ = 1;
 
+    Qty& side_qty(Side s) noexcept { return is_buy(s) ? bid_qty_ : ask_qty_; }
     Level& level_for(Side s, u32 off) noexcept { return is_buy(s) ? bids_[off] : asks_[off]; }
     const Level& level_for(Side s, u32 off) const noexcept { return is_buy(s) ? bids_[off] : asks_[off]; }
     u32 offset_for(Side s, Price p) const noexcept {
@@ -149,7 +151,7 @@ private:
     void assert_best_cache(Side, u32) const noexcept {}
 #endif
     Qty match_against(Order& o, std::vector<Fill>& fills);
-    Qty available_within(Side taker_side, Price limit_price) const noexcept;
+    Qty available_within(Side taker_side, Price limit_price, Qty needed) const noexcept;
     // Infallible after prepare_rest_resources(): rest cannot fail, so a
     // failed add_order can never carry fills (see add_order).
     void rest(Order o);

@@ -383,7 +383,8 @@ std::vector<StrategyAction> MomentumStrategy::on_timer() {
     std::vector<StrategyAction> acts;
     if (!cfg_.enabled) return acts;
     i64 sum = 0;
-    for (i64 s : signs_) sum += s;
+    for (size_t i = signs_.size() - std::min(signs_.size(), cfg_.window); i < signs_.size(); ++i)
+        sum += signs_[i];
     if (std::abs(sum) < cfg_.min_signal) return acts;
     const Side side = sum > 0 ? Side::Buy : Side::Sell;
     const i64 headroom = side == Side::Buy

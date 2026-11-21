@@ -225,6 +225,10 @@ AX_TEST(worldrestore_chained_snapshots_equivalent) {
     RunStats sf = f.run();
     CHECK_EQ(f.state_hash(), ref_hash);
     check_stats_equal(ref_stats, sf);
+    CHECK_EQ(sf.fill_latency.count(), sf.stage_traced_fills);
+    for (const u64 id : s2.sim.live_provider_orders)
+        CHECK(std::binary_search(s2.order_accounts.begin(), s2.order_accounts.end(),
+                                 std::pair{id, 0u}, [](const auto& a, const auto& b) { return a.first < b.first; }));
 }
 
 AX_TEST(worldrestore_randomized_fuzz) {
@@ -1073,6 +1077,27 @@ AX_TEST(snapshot_format15_rejects_legacy14) {
     std::fclose(file);
     const auto legacy=read_world_snapshot("artifacts/legacy14.wsnap");
     CHECK(!legacy); CHECK_EQ(legacy.status.code,Errc::Unsupported);
+}
+
+AX_TEST(fee_fork_keeps_the_match_time_fee_on_inflight_fills) {
+    auto cfg = snap_test_config();
+    cfg.exec_channel.base_delay_ns = 10'000'000;
+    cfg.hash_every_events = 0;
+    World parent(cfg, 42);
+    parent.run(1200);
+    CHECK(parent.stats().mm_auth_filled_qty > 0);
+    CHECK_EQ(parent.stats().mm_real_filled_qty, 0u);
+    auto branch_cfg = cfg;
+    branch_cfg.fee_per_lot = 10;
+    World child(branch_cfg, 42);
+    CHECK(child.restore_snapshot(parent.capture_snapshot(), branch_cfg, false));
+    for (int i = 0; i < 10'000 && parent.stats().mm_real_filled_qty == 0; ++i) {
+        parent.run(1);
+        child.run(1);
+    }
+    CHECK(parent.stats().mm_real_filled_qty > 0);
+    CHECK_EQ(child.stats().mm_real_filled_qty, parent.stats().mm_real_filled_qty);
+    CHECK_EQ(child.stats().mm_cash, parent.stats().mm_cash);
 }
 
 AX_TEST_MAIN

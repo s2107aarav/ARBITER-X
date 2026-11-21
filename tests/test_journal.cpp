@@ -173,6 +173,8 @@ AX_TEST(replay_validates_snapshot_identity_and_sequence) {
         invalid.config_hash = 999;
         CHECK(!replay_journal(path, impl, 0, &invalid).status);
         invalid = base;
+        ++invalid.logical_t;
+        CHECK(!replay_journal(path, impl, 1, &invalid).status);
         invalid.last_event_seq = 2;
         CHECK(!replay_journal(path, impl, 0, &invalid).status);
         CHECK(!replay_journal(path, impl, 1, &invalid).status);
@@ -433,6 +435,9 @@ AX_TEST(snapshot_roundtrip) {
     snap.ladder = b.to_ladder();
     const std::string p = kArtDir + "/snap.snap";
     CHECK(write_snapshot(p, snap));
+    auto invalid = snap;
+    invalid.ladder.bids.push_back({});
+    CHECK_EQ(write_snapshot(p, invalid).code, Errc::SnapshotInvalid);
     auto back = read_snapshot(p);
     CHECK(back);
     if (!back) return;

@@ -28,36 +28,36 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 | cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
-| md0.000 | md+0,dec+4000,ord+4000 | -240235.1 | 34804.5 | -1.39 | 64125.0 | 2038.9 |
-| md0.125 | md+1000,dec+3500,ord+3500 | -300133.6 | 35512.5 | -1.49 | 125148.4 | 2266.8 |
-| md0.250 | md+2000,dec+3000,ord+3000 | -195298.0 | 33264.9 | -0.83 | 141667.4 | 1966.0 |
-| md0.375 | md+3000,dec+2500,ord+2500 | -287842.1 | 35849.4 | -1.63 | 25202.1 | 2368.9 |
-| md0.500 | md+4000,dec+2000,ord+2000 | -186236.6 | 31932.0 | -1.15 | 132794.9 | 2032.2 |
-| md0.625 | md+5000,dec+1500,ord+1500 | -274529.0 | 40167.1 | -1.79 | -2772.1 | 2555.6 |
-| md0.750 | md+6000,dec+1000,ord+1000 | -256601.8 | 40351.2 | -1.93 | 57431.2 | 2556.4 |
-| md0.875 | md+7000,dec+500,ord+500 | -227099.4 | 35674.5 | -0.94 | 30978.5 | 1971.2 |
-| md1.000 | md+8000,dec+0,ord+0 | -215654.2 | 32639.9 | -0.81 | 143619.1 | 1605.0 |
+| md0.000 | md+0,dec+4000,ord+4000 | -208654.8 | 37224.0 | +0.33 | 77327.5 | 1835.2 |
+| md0.125 | md+1000,dec+3500,ord+3500 | -189187.1 | 39082.5 | +0.29 | 75542.0 | 1682.8 |
+| md0.250 | md+2000,dec+3000,ord+3000 | -240828.8 | 40641.4 | +0.28 | 8492.0 | 1981.0 |
+| md0.375 | md+3000,dec+2500,ord+2500 | -194930.8 | 37009.1 | +0.32 | 67453.6 | 1626.5 |
+| md0.500 | md+4000,dec+2000,ord+2000 | -247499.4 | 40303.2 | +0.21 | 104629.2 | 1933.0 |
+| md0.625 | md+5000,dec+1500,ord+1500 | -237626.9 | 36573.0 | +0.20 | 102213.8 | 1989.9 |
+| md0.750 | md+6000,dec+1000,ord+1000 | -225005.6 | 38859.8 | +0.22 | 91440.0 | 1906.0 |
+| md0.875 | md+7000,dec+500,ord+500 | -190609.6 | 35054.0 | +0.24 | 129016.2 | 1681.1 |
+| md1.000 | md+8000,dec+0,ord+0 | -259680.9 | 38322.6 | +0.26 | 132426.5 | 2030.6 |
 
 ## Paired contrasts (MM PnL, b − a, per seed)
 
 | contrast | mean diff | 95% CI (iid) | p (perm) | p (Holm) | per-lot | significant | material |
 |---|---|---|---|---|---|---|---|
-| md0.000 → md0.125 | -59898.5 | [-226239.7, +106442.7] | 0.5781 | 1.0000 | -1.70 | no | yes |
-| md0.125 → md0.250 | +104835.6 | [-39474.5, +249145.7] | 0.2500 | 1.0000 | +3.05 | no | yes |
-| md0.250 → md0.375 | -92544.1 | [-144563.2, -40525.1] | 0.0156 | 0.1406 | -2.68 | no | yes |
-| md0.375 → md0.500 | +101605.5 | [+52310.4, +150900.6] | 0.0234 | 0.1875 | +3.00 | no | yes |
-| md0.500 → md0.625 | -88292.4 | [-171611.2, -4973.6] | 0.0703 | 0.4922 | -2.45 | no | yes |
-| md0.625 → md0.750 | +17927.2 | [-60785.5, +96640.0] | 0.6562 | 1.0000 | +0.45 | no | no |
-| md0.750 → md0.875 | +29502.4 | [-82065.4, +141070.1] | 0.6094 | 1.0000 | +0.78 | no | no |
-| md0.875 → md1.000 | +11445.1 | [-94438.1, +117328.4] | 0.8438 | 1.0000 | +0.34 | no | no |
-| md0.000 → md1.000 | +24580.9 | [-83517.8, +132679.6] | 0.6875 | 1.0000 | +0.73 | no | no |
+| md0.000 → md0.125 | +19467.6 | [-32263.7, +71198.9] | 0.4375 | 1.0000 | +0.51 | no | no |
+| md0.125 → md0.250 | -51641.6 | [-116423.5, +13140.3] | 0.1406 | 1.0000 | -1.30 | no | yes |
+| md0.250 → md0.375 | +45898.0 | [-15618.5, +107414.5] | 0.1953 | 1.0000 | +1.18 | no | yes |
+| md0.375 → md0.500 | -52568.6 | [-119034.3, +13897.1] | 0.1719 | 1.0000 | -1.36 | no | yes |
+| md0.500 → md0.625 | +9872.5 | [-65389.4, +85134.4] | 0.8438 | 1.0000 | +0.26 | no | no |
+| md0.625 → md0.750 | +12621.2 | [-106828.7, +132071.2] | 0.8203 | 1.0000 | +0.33 | no | no |
+| md0.750 → md0.875 | +34396.0 | [-33368.7, +102160.7] | 0.4141 | 1.0000 | +0.93 | no | no |
+| md0.875 → md1.000 | -69071.2 | [-127392.1, -10750.4] | 0.0781 | 0.7031 | -1.88 | no | yes |
+| md0.000 → md1.000 | -51026.1 | [-165230.5, +63178.2] | 0.3984 | 1.0000 | -1.35 | no | yes |
 
-- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff +24580.9 ticks*qty (per-lot +0.73), Holm p=1.0000, not significant
-- economic materiality (primary): not material (threshold 1.00 ticks*qty/lot)
-- MM filled lots across the slice: 32639.9 (md share 1) vs 34804.5 (md share 0): placement changes fill mechanics
-- taker (momentum) PnL across the slice: 64125.0 -> 143619.1 (moves)
-- taker primary-contrast paired PnL diff: +79494.1 (se 52335.3, perm p=0.1641) — not significant
-- The primary contrast is inconclusive after Holm correction. The point estimate falls below the materiality threshold.
+- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff -51026.1 ticks*qty (per-lot -1.35), Holm p=1.0000, not significant
+- economic materiality (primary): MATERIAL (threshold 1.00 ticks*qty/lot)
+- MM filled lots across the slice: 38322.6 (md share 1) vs 37224.0 (md share 0): placement changes fill mechanics
+- taker (momentum) PnL across the slice: 77327.5 -> 132426.5 (moves)
+- taker primary-contrast paired PnL diff: +55099.0 (se 91830.4, perm p=0.5547) — not significant
+- The primary contrast is inconclusive after Holm correction. The point estimate meets the materiality threshold.
 
 ## Falsification status
 

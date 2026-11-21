@@ -114,6 +114,26 @@ double permutation_pvalue(const std::vector<double>& d, u64 seed, size_t reps) {
     return (static_cast<double>(ge) + 1.0) / (static_cast<double>(reps) + 1.0);
 }
 
+u64 definition_hash(const FlagshipConfig& fc) {
+    Hasher h;
+    h.tag("ARBITERX/FLAGSHIP/2");
+    h.str(fc.name);
+    h.i64v(fc.total_latency_ns);
+    h.u64v(fc.md_shares.size());
+    for (double x : fc.md_shares) h.u64v(std::bit_cast<u64>(x));
+    h.u8v(static_cast<u8>(fc.flow_model));
+    h.u64v(std::bit_cast<u64>(fc.taker_self_excitation));
+    h.boolean(fc.bots_observe_shadow);
+    h.u64v(fc.seeds.size());
+    for (u64 s : fc.seeds) h.u64v(s);
+    h.i64v(fc.horizon_ns);
+    h.i64v(fc.warmup_ns);
+    h.u64v(std::bit_cast<u64>(fc.economic_threshold_ticks_qty_per_lot));
+    h.u64v(fc.permutation_reps);
+    h.u64v(static_cast<u64>(fc.hac_lag));
+    return h.value();
+}
+
 }  // namespace
 
 const char* PairComparison::verdict() const noexcept {
@@ -135,12 +155,17 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         throw std::invalid_argument("invalid flagship definition");
     if (std::set<u64>(fc.seeds.begin(), fc.seeds.end()).size() != fc.seeds.size())
         throw std::invalid_argument("duplicate flagship seeds");
+    LogicalNs previous_md = -1;
     for (size_t i = 0; i < fc.md_shares.size(); ++i) {
         const double share = fc.md_shares[i];
         if (!std::isfinite(share) || share < 0.0 || share > 1.0 ||
             (i > 0 && share <= fc.md_shares[i - 1]))
             throw std::invalid_argument("flagship md shares must increase within [0,1]");
-        const WorldConfig cfg = allocation_on_slice(fc.total_latency_ns, share).apply_to(base_world_config(fc));
+        const auto alloc = allocation_on_slice(fc.total_latency_ns, share);
+        if (alloc.md_transit_ns == previous_md)
+            throw std::invalid_argument("flagship shares round to the same latency allocation");
+        previous_md = alloc.md_transit_ns;
+        const WorldConfig cfg = alloc.apply_to(base_world_config(fc));
         if (const std::string invalid = cfg.validate(); !invalid.empty())
             throw std::invalid_argument("invalid flagship world: " + invalid);
     }
@@ -154,26 +179,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
     res.core_revision = build::revision();
     res.core_source_state = build::source_state();
 
-    // definition hash: everything that changes numbers
-    {
-        Hasher h;
-        h.tag("ARBITERX/FLAGSHIP/2");
-        h.str(fc.name);
-        h.i64v(fc.total_latency_ns);
-        h.u64v(fc.md_shares.size());
-        for (double x : fc.md_shares) h.u64v(std::bit_cast<u64>(x));
-        h.u8v(static_cast<u8>(fc.flow_model));
-        h.u64v(std::bit_cast<u64>(fc.taker_self_excitation));
-        h.boolean(fc.bots_observe_shadow);
-        h.u64v(fc.seeds.size());
-        for (u64 s : fc.seeds) h.u64v(s);
-        h.i64v(fc.horizon_ns);
-        h.i64v(fc.warmup_ns);
-        h.u64v(std::bit_cast<u64>(fc.economic_threshold_ticks_qty_per_lot));
-        h.u64v(fc.permutation_reps);
-        h.u64v(static_cast<u64>(fc.hac_lag));
-        res.definition_hash = h.value();
-    }
+    res.definition_hash = definition_hash(fc);
 
     // run the grid: every cell over every seed (paired by construction:
     // same seed -> same master RNG streams)
@@ -237,7 +243,7 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         // using the two cells' average traded volume as the denominator)
         const double dq = res.cells[ib].mean_mm_filled_qty + res.cells[ia].mean_mm_filled_qty;
         p.pnl_diff_per_lot = dq > 0 ? (p.mean_diff / (dq / 2.0)) : 0.0;
-        p.economically_material =
+        p.economically_material = dq > 0 &&
             std::fabs(p.pnl_diff_per_lot) >= fc.economic_threshold_ticks_qty_per_lot;
         res.pairs.push_back(std::move(p));
     };
@@ -362,9 +368,10 @@ bool scan_num(const std::string& text, const std::string& key, double& out) {
     size_t pos = text.find(pat);
     if (pos == std::string::npos) return false;
     pos += pat.size();
-    const char* start=text.c_str()+pos; char* end=nullptr; errno=0;
+    const char* start = text.c_str() + pos;
+    char* end = nullptr;
     out = std::strtod(start, &end);
-    if(errno==ERANGE || end==start || !std::isfinite(out)) return false;
+    if (end == start || !std::isfinite(out)) return false;
     while(std::isspace(static_cast<unsigned char>(*end))) ++end;
     return *end==',' || *end==']' || *end=='}';
 }
@@ -765,23 +772,25 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
         if (!scan_num(text, "economic_threshold", v)) { rep.detail = "invalid economic_threshold"; return rep; }
         fc.economic_threshold_ticks_qty_per_lot = v;
         u64 u = 0;
-        if (!scan_int(text, "permutation_reps", u)) { rep.detail = "invalid permutation_reps"; return rep; }
-        fc.permutation_reps = u;
+        if (!scan_int(text, "permutation_reps", u) || u > std::numeric_limits<size_t>::max()) {
+            rep.detail = "invalid permutation_reps"; return rep;
+        }
+        fc.permutation_reps = static_cast<size_t>(u);
         if (!scan_int(text, "hac_lag", u) || u > std::numeric_limits<size_t>::max()) {
             rep.detail = "invalid hac_lag"; return rep;
         }
         fc.hac_lag = static_cast<size_t>(u);
     }
 
+    const u64 rebuilt_hash = definition_hash(fc);
+    if (rebuilt_hash != def_hash) {
+        rep.detail = "definition_hash mismatch: rebuilt " + std::to_string(rebuilt_hash) +
+                     " vs artifact " + std::to_string(def_hash);
+        return rep;
+    }
     FlagshipResult res;
     try { res = run_flagship(fc); }
     catch (const std::invalid_argument& error) { rep.detail = error.what(); return rep; }
-    if (res.definition_hash != def_hash) {
-        rep.detail = "definition_hash mismatch: rebuilt " + std::to_string(res.definition_hash) +
-                     " vs artifact " + std::to_string(def_hash) +
-                     " (software/version drift? horizon/threshold defaults?)";
-        return rep;
-    }
     rep.cells_checked = cells.size();
     rep.seeds_checked = seeds.size();
     for (size_t c = 0; c < cells.size(); ++c) {

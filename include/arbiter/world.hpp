@@ -204,13 +204,13 @@ private:
     void deliver_expected();
     void maybe_schedule_gap_request();
     void gap_recover();
-    void deliver_fill(const Fill& f, LogicalNs t);
+    void deliver_fill(const Fill& f, LogicalNs t, i64 fee_per_lot);
     // static encode/decode helpers (frame codecs, live path)
     static std::string encode_order_frame(const StrategyAction& act, u32 mm_account, u64 seq);
     static Order decode_order_frame(const std::string& frame, bool& is_cancel, bool& ok,
                                     u8& channel, u64& seq);
     // Encode an execution notification into its wire frame (kind 0..3).
-    static std::string encode_notify_frame(const Notify& n, u64 seq);
+    static std::string encode_notify_frame(const Notify& n, i64 fee_per_lot);
     // Apply in-transit corruption to a frame (deterministic single-byte flip
     // inside the payload region).
     static void corrupt_frame(std::string& frame, Rng& rng);

@@ -49,7 +49,7 @@ jobs:
       - name: Benchmark smoke gate
         run: |
           set -o pipefail
-          ./build/arbiter_bench exchange --quick | tee benchmark-exchange.txt
+          ./build/arbiter_bench exchange | tee benchmark-exchange.txt
           python3 - <<'PY'
           import re
           from pathlib import Path

@@ -8,7 +8,7 @@
 - **Reproduce**: `arbiter flagship --reproduce <dir>/results.json`
   (bit-for-bit when compiler and platform provenance match; all per-seed state
   hashes + economics).
-- **Date**: 2026-11-20. The runner regenerated all three records after corrections to partial fills, FIFO queue estimates, and quote sizing.
+- **Date**: 2026-11-21. The runner regenerated all three records after excluding filled provider orders from cancellation targets.
 
 ## Question
 
@@ -37,34 +37,26 @@ H0: only the total matters. H1: placement matters.
 
 ## Results (clustered, reactive, the flagship run)
 
-* **Poisson null (k=0)**: every cell has identical mean economics (MM PnL 168.8, 168.8
-  lots, all contrasts exactly 0, p=1): allocation has no effect under this
-  null market. INTERPRETATION SCOPE: the regime contrast varies the taker
-  process's dependence structure AND its realized intensity/sign structure
-  together. The momentum archetype participates when its sign-signal threshold
-  is reached, so the null result is
-  NECESSARY but not SUFFICIENT evidence for the clustered-flow mechanism;
-  it does not isolate dependence from intensity.
-* **Clustered, reactive (k=0.9).** Mean MM PnL across cells ranged from
-  −300,133.6 to −186,236.6 ticks×qty. Mean filled lots ranged from 31,932.0
-  to 40,351.3 and mean markouts from −1.93 to −0.81 ticks. Moving the full
-  budget from action to observation produced a mean paired difference of
-  +24,580.9 ticks×qty, or +0.73 per filled lot. Five of eight differences
-  were positive. The descriptive IID 95% interval was [−83,517.8, +132,679.6].
-  The raw permutation p-value was 0.6875 and the Holm-adjusted p-value was 1.0.
-* **Clustered, frozen.** The same contrast gave +5,060.0 ticks×qty, or
-  +0.16 per filled lot. All eight differences were positive. The raw
-  permutation p-value was 0.0078125 and the Holm-adjusted p-value was
-  0.0703125. Observation feedback changes the size of the point estimate.
-* Adjacent contrasts vary in sign. The grid does not establish an optimal
-  allocation.
+* **Poisson null (k=0).** The primary contrast was −0.02 ticks per filled
+  lot with Holm p=1.0. The regime contrast varies both dependence and realized
+  intensity, and the momentum strategy participates only when it sees a
+  qualifying signal.
+* **Clustered, reactive (k=0.9).** Mean MM PnL ranged from −259,680.9 to
+  −189,187.1 ticks×qty. Mean filled lots ranged from 35,054.0 to 40,641.4
+  and mean markouts from +0.20 to +0.33 ticks. Moving the full budget from
+  action to observation gave a mean paired difference of −51,026.1
+  ticks×qty, or −1.35 per filled lot. Six of eight differences were
+  negative. The descriptive IID 95% interval was [−165,230.5, +63,178.2].
+  The raw permutation p-value was 0.3984375 and the Holm-adjusted p-value was 1.0.
+* **Clustered, frozen.** The same contrast gave +1,821.3 ticks×qty, or
+  +0.06 per filled lot, with raw p=0.1015625 and Holm p=0.9140625.
+  The change in sign and magnitude shows sensitivity to observation feedback.
 
 ## Verdict
 
-Both clustered point estimates fell below the prespecified threshold of
-1 tick×qty per filled lot. Neither primary contrast reached significance
-after Holm correction at 0.05. The reactive interval includes effects in
-both directions. These eight paired seeds leave the placement question open.
+The reactive point estimate exceeds the 1 tick per filled lot materiality
+threshold in magnitude. The reactive and frozen contrasts are statistically
+inconclusive after Holm correction across eight paired seeds.
 
 ## Limitations
 

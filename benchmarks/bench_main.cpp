@@ -216,15 +216,10 @@ void run_book_workload(Book& book, const Workload& wl, u64 id_offset, Histogram*
         const WorkloadOp& op = wl.ops[i];
         const u64 t0 = (sample && (i & 7) == 0) ? now_ns() : 0;
         switch (op.kind) {
-            case BookOp::Add: {
-                Order o = op.order;
-                o.id += id_offset;
-                book.add_order(o, fills, nullptr);
-                break;
-            }
             case BookOp::Cancel:
                 book.cancel(op.target + id_offset);
                 break;
+            case BookOp::Add:
             case BookOp::Taker: {
                 Order o = op.order;
                 o.id += id_offset;
@@ -331,9 +326,10 @@ void bench_journal() {
 }
 
 void bench_world_e2e() {
-    std::printf("=== end-to-end world (full pipeline, journal off) ===\n");
+    std::printf("=== end-to-end world (journal and hash timeline off) ===\n");
     WorldConfig cfg;
     cfg.journal_events = false;
+    cfg.hash_every_events = 0;
     cfg.horizon_ns = g_quick ? 10'000'000 : 2'000'000'000;
     // warmup
     {

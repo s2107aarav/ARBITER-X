@@ -36,11 +36,8 @@ Result<JournalWriter> JournalWriter::create(const std::string& path, u64 master_
     hw.put_u32(1);
     hw.put_u64(master_seed);
     hw.put_u64(config_hash);
-    if (std::fwrite(hw.data().data(), 1, hw.size(), w.f_) != hw.size()) {
-        std::fclose(w.f_);
-        w.f_ = nullptr;
-        return ErrT<JournalWriter>(Errc::IoError, 1);
-    }
+    if (std::fwrite(hw.data().data(), 1, hw.size(), w.f_) != hw.size() || std::fflush(w.f_) != 0)
+        return ErrT<JournalWriter>(Errc::IoError, errno);
     w.buf_.reserve(1u << 16);
     return OkT(std::move(w));
 }
@@ -144,8 +141,14 @@ JournalReader& JournalReader::operator=(JournalReader&& o) noexcept {
 }
 
 Result<JournalReader> JournalReader::open(const std::string& path) {
+    return open(path, false);
+}
+
+Result<JournalReader> JournalReader::open(const std::string& path, bool recover) {
     JournalReader r;
-    r.f_ = std::fopen(path.c_str(), "rb");
+    r.f_ = std::fopen(path.c_str(), recover ? "r+b" : "rb");
+    if (!r.f_ && recover && (errno == EACCES || errno == EROFS))
+        r.f_ = std::fopen(path.c_str(), "rb");
     if (!r.f_) return ErrT<JournalReader>(errno == ENOENT ? Errc::NotFound : Errc::IoError, errno);
     const auto bad_header = [&](u64 offset) {
         return ErrT<JournalReader>(std::ferror(r.f_) ? Errc::IoError : Errc::JournalCorrupt, offset);
@@ -227,13 +230,13 @@ JournalVerifyReport journal_verify(const std::string& path) {
 }
 
 Result<u64> journal_recover(const std::string& path) {
-    auto rd = JournalReader::open(path);
+    auto rd = JournalReader::open(path, true);
     if (!rd) return ErrT<u64>(rd.status.code, rd.status.context);
     JournalReader& r = rd.value;
     while (r.has_next() && r.next()) {}
     if (r.failed()) {
         if (r.error().code == Errc::IoError) return ErrT<u64>(Errc::IoError, r.error().context);
-        if (::truncate(path.c_str(), static_cast<off_t>(r.offset())) != 0)
+        if (::ftruncate(::fileno(r.f_), static_cast<off_t>(r.offset())) != 0)
             return ErrT<u64>(Errc::IoError, static_cast<u64>(errno));
     }
     return OkT(r.records_read());

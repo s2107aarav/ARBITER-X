@@ -19,7 +19,7 @@ payload:          canonical encoded Event (58B, fixed layout)
 * reader validates magic, version, length bounds, CRC, event decoding, and
   sequence continuity; reports first failure with byte offset, never crashes
   on corrupt input
-* `journal_recover` truncates to the last verifiable frame boundary
+* `journal_recover` truncates to the last verifiable frame boundary while the writer is stopped
 * ~66B/event measured on disk
 
 `EvType::Checkpoint` stores the canonical book hash (`ARBITERX/BOOK/1`) in

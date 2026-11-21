@@ -6,9 +6,9 @@ A counterfactual experiment runs N Worlds with the **same master seed** and
 configurations that differ in exactly the variable(s) under study. Because
 every random draw comes from `(master_seed, stream_id)` streams, variants
 consume the same unit variates: changing a latency changes *delays*, not the
-underlying randomness. Histories are therefore identical until the changed
-variable reorders events. The state-hash timeline bounds divergence between
-recorded checkpoints; it does not identify the exact causal event.
+underlying draws. Latency can change event timestamps, the information a
+strategy sees, and subsequent behavior. The first divergent hash bounds
+divergence between recorded checkpoints.
 
 Common random numbers reduce variance by pairing runs. They do
 not by themselves make the estimate causal; the causal reading is always
@@ -50,7 +50,7 @@ Controls:
 
 * **flow regime** (`--flow poisson|clustered`): the clustered regime arms
   taker self-excitation k=0.9 (see docs/SIMULATION.md); the Poisson regime
-  is the falsification placebo (k=0, exactly the historical bit-stream).
+  is the falsification placebo (k=0).
 * **interference mode** (reactive default; `--frozen` re-run quantifies
   observation-channel feedback).
 * **pairing**: cells are paired by macro-seed; the seed is the unit of
@@ -74,7 +74,9 @@ bit-for-bit when compiler and platform provenance match:
 
 Total-latency, network and fee grids moved to
 [ARBITER-X-LAB](https://github.com/GodsFinest/ARBITER-X-LAB). Core worldfork
-retains the same strict dotted-key overrides without depending on the grid runner.
+retains the same dotted-key overrides. Fee forks preserve the fee on fills
+matched before the fork, including reports still in flight. Account IDs and
+the momentum order ID base are fixed by the parent snapshot.
 
 ## Queue-model accuracy
 

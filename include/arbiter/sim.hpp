@@ -90,6 +90,7 @@ public:
     }
     // Taker momentum bias: fed by the World for each trade print.
     void note_trade(Price price);
+    void retire_provider_order(u64 id);
 
     int regime() const noexcept { return regime_; }
     u64 actions_generated() const noexcept { return actions_; }

@@ -23,7 +23,7 @@ citing a number.
   and optimized books, followed by a steady-state allocation probe.
 - `protocol`: CRC-framed wire encode/decode throughput and latency.
 - `journal`: append and verified-read costs over a generated event stream.
-- `pipeline`: complete world throughput and instrumentation overhead.
+- `pipeline`: world throughput with journaling and periodic hashes disabled, plus a separate instrumentation comparison.
   Historical analysis measurements moved to arbiter_lab_bench; SPSC was retired.
 
 The optimized book uses a contiguous price ladder, slab-allocated order nodes,
@@ -73,6 +73,6 @@ is one steady-state allocation for the optimized book versus 188,905 for the
 Three sequential post-extraction M1/Apple Clang 17 Release exchange runs retained
 the 1/188905 allocation result. Median aggregate throughput was 10,344,328 ops/s
 optimized and 9,233,674 reference over 500,000 operations. See benchmarks/ for raw
-logs and the run summary. The matching algorithm was unchanged; timing
+logs and the run summary. The matching algorithm was unchanged for those runs; timing
 differences are not attributed to the refactor. These remain host-specific
 measurements, with a separate 200,000-op allocation probe.

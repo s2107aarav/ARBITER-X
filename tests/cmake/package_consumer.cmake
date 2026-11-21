@@ -33,9 +33,8 @@ int main() {
   auto fresh=cfg; fresh.journal_path="continuation.journal";
   arbiter::World branch(fresh,42);
   if (!branch.restore_snapshot(snapshot,fresh,true)) return 5;
-  branch.run(1);
-  world.run();
-  return world.state_hash()==1236319655606612024ull ? 0 : 1;
+  return branch.run().events_processed == world.run().events_processed &&
+         branch.state_hash() == world.state_hash() ? 0 : 1;
 }
 ]=])
 execute_process(COMMAND "${CMAKE_COMMAND}" -S "${root}/source" -B "${root}/build" "-DCMAKE_PREFIX_PATH=${root}/relocated prefix" "-DCMAKE_CXX_COMPILER=${COMPILER}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF RESULT_VARIABLE result)

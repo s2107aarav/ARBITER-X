@@ -71,6 +71,11 @@ void MarketSim::note_trade(Price price) {
     taker_boost_active_ = true;
 }
 
+void MarketSim::retire_provider_order(u64 id) {
+    const auto it = std::lower_bound(live_provider_orders_.begin(), live_provider_orders_.end(), id);
+    if (it != live_provider_orders_.end() && *it == id) live_provider_orders_.erase(it);
+}
+
 Price MarketSim::provider_price(Side s, bool deep) const {
     const i64 off = cfg_.touch_offset_ticks + (deep ? cfg_.deep_offset_ticks : 0);
     // Quote relative to the live touch AND never cross: when one side of the
@@ -148,16 +153,10 @@ BotAction MarketSim::next_action() {
     // historical bit-stream).
     const bool has_last_side = last_taker_side_ == static_cast<u8>(Side::Buy) ||
                                last_taker_side_ == static_cast<u8>(Side::Sell);
-    if (cfg_.taker_self_excitation > 0.0 && has_last_side &&
-        taker_rng_.unit() < cfg_.taker_self_excitation) {
-        a.ord.side = static_cast<Side>(last_taker_side_);
-        last_taker_side_ = static_cast<u8>(a.ord.side);
-        a.ord.price = 0;
-        a.ord.qty = std::max<Qty>(1, cfg_.taker_qty * (regime_ == 1 ? cfg_.volatile_qty_multiplier : 1));
-        a.ord.leaves = a.ord.qty;
-        return a;
-    }
-    a.ord.side = taker_rng_.unit() < p_buy ? Side::Buy : Side::Sell;
+    const bool repeat = cfg_.taker_self_excitation > 0.0 && has_last_side &&
+                        taker_rng_.unit() < cfg_.taker_self_excitation;
+    a.ord.side = repeat ? static_cast<Side>(last_taker_side_)
+                        : (taker_rng_.unit() < p_buy ? Side::Buy : Side::Sell);
     last_taker_side_ = static_cast<u8>(a.ord.side);
     a.ord.price = 0;
     a.ord.qty = std::max<Qty>(1, cfg_.taker_qty * (regime_ == 1 ? cfg_.volatile_qty_multiplier : 1));

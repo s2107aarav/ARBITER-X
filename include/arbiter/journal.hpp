@@ -81,6 +81,8 @@ public:
     JournalReader() = default;
 
 private:
+    friend Result<u64> journal_recover(const std::string& path);
+    static Result<JournalReader> open(const std::string& path, bool recover);
     std::FILE* f_ = nullptr;
     JournalHeader hdr_{};
     u64 pos_ = 0;       // byte offset after last good frame

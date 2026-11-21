@@ -117,6 +117,10 @@ AX_TEST(flagship_rejects_invalid_grids_before_running) {
     cfg.seeds = {1, 1};
     rejected(cfg);
     cfg.seeds = {1};
+    cfg.total_latency_ns = 1;
+    cfg.md_shares = {0, 0.25, 1};
+    rejected(cfg);
+    cfg.md_shares = {0, 1};
     cfg.economic_threshold_ticks_qty_per_lot = std::numeric_limits<double>::quiet_NaN();
     rejected(cfg);
 }

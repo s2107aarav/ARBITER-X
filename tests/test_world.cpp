@@ -1374,6 +1374,7 @@ AX_TEST(world_config_validation_rejects_degenerate_configs) {
     { WorldConfig c; c.max_events = 0; c.momentum.id_base = 1; CHECK(c.validate().empty()); }
     { WorldConfig c; c.risk.max_position = -1; expect_invalid(c); }
     { WorldConfig c; c.horizon_ns = 0; expect_invalid(c); }
+    { WorldConfig c; c.warmup_ns = std::numeric_limits<LogicalNs>::max(); expect_invalid(c); }
     // the documented cancel-latency sentinel stays exactly valid
     { WorldConfig c; c.cancel_latency_ns = -1; CHECK(c.validate().empty()); }
 }

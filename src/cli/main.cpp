@@ -29,6 +29,7 @@
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -327,13 +328,13 @@ int cmd_worldjump(int argc, char** argv) {
     if (!valid_options(argc, argv, {"--snap", "--events", "--seed"})) return 2;
     const char* path = nullptr;
     u64 events = 0;  // 0 = run to the configured horizon
-    u64 seed = 0;    // 0 = use the seed recorded in the snapshot
+    std::optional<u64> seed_override;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--snap") && i + 1 < argc) path = argv[++i];
         else if (!std::strcmp(argv[i], "--events")) {
             if (!parse_u64_option(argc, argv, i, events)) return 2;
         } else if (!std::strcmp(argv[i], "--seed")) {
-            if (!parse_u64_option(argc, argv, i, seed)) return 2;
+            if (!parse_u64_option(argc, argv, i, seed_override.emplace())) return 2;
         }
     }
     if (!path) {
@@ -348,7 +349,7 @@ int cmd_worldjump(int argc, char** argv) {
                     (unsigned long long)snap.status.context);
         return 1;
     }
-    if (seed == 0) seed = snap.value.master_seed;
+    const u64 seed = seed_override.value_or(snap.value.master_seed);
     // A snapshot is tied to its recorded master seed (see worldfork).
     if (seed != snap.value.master_seed) {
         std::printf("seed mismatch: the snapshot is tied to master seed %llu; "
@@ -384,14 +385,14 @@ int cmd_worldfork(int argc, char** argv) {
     const char* path = nullptr;
     const char* variable = "half_spread=4";
     u64 events = 0;
-    u64 seed = 0;  // 0 = use the seed recorded in the snapshot
+    std::optional<u64> seed_override;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--snap") && i + 1 < argc) path = argv[++i];
         else if (!std::strcmp(argv[i], "--variable") && i + 1 < argc) variable = argv[++i];
         else if (!std::strcmp(argv[i], "--events")) {
             if (!parse_u64_option(argc, argv, i, events)) return 2;
         } else if (!std::strcmp(argv[i], "--seed")) {
-            if (!parse_u64_option(argc, argv, i, seed)) return 2;
+            if (!parse_u64_option(argc, argv, i, seed_override.emplace())) return 2;
         }
     }
     if (!path) {
@@ -407,10 +408,7 @@ int cmd_worldfork(int argc, char** argv) {
         std::printf("snapshot read failed: %s\n", to_cstr(snap.status.code));
         return 1;
     }
-    if (seed == 0) seed = snap.value.master_seed;
-    // A snapshot is tied to its recorded master seed: a different --seed can
-    // never restore. Reject it HERE with a clear message instead of failing
-    // later as a vague snapshot error.
+    const u64 seed = seed_override.value_or(snap.value.master_seed);
     if (seed != snap.value.master_seed) {
         std::printf("seed mismatch: the snapshot is tied to master seed %llu; "
                     "--seed %llu cannot restore it\n",
@@ -428,11 +426,6 @@ int cmd_worldfork(int argc, char** argv) {
     }
     const std::string key = var.substr(0, eq);
     const std::string val = var.substr(eq + 1);
-    // v13 snapshots persist the COMPLETE generating configuration: the
-    // parent continuation is exactly the config that produced the snapshot,
-    // and the fork differs by exactly the one requested variable. No
-    // defaults are assumed for non-v13-capable state (the version check
-    // rejects older snapshots loudly before this point).
     WorldConfig orig = snap.value.config;
     orig.journal_events = false;
     WorldConfig cfg = orig;
@@ -444,9 +437,9 @@ int cmd_worldfork(int argc, char** argv) {
     // reuse the experiment variable table (single source of truth)
     std::string err;
     if (!apply_world_override(cfg, full_key, val, err)) {
-        std::printf("unknown variable: %s (supported: any experiment override, e.g.\n"
+        std::printf("invalid override: %s (supported keys include\n"
                     "  half_spread | algo_latency | md_loss | fee_per_lot | md_channel.jitter_ns ...)\n"
-                    "  see docs/COUNTERFACTUALS.md\n", key.c_str());
+                    "  see docs/COUNTERFACTUALS.md\n", err.c_str());
         return 2;
     }
     if (const std::string invalid = cfg.validate(); !invalid.empty()) {
@@ -472,7 +465,7 @@ int cmd_worldfork(int argc, char** argv) {
     // fork B: one changed variable from the SAME snapshot
     World b(cfg, seed);
     if (Status st = b.restore_snapshot(snap.value, cfg, /*strict_config=*/false); !st) {
-        std::printf("fork restore failed: %s\n", to_cstr(st.code));
+        std::printf("fork restore failed for %s: %s\n", full_key.c_str(), to_cstr(st.code));
         return 1;
     }
     RunStats sb = b.run(fork_budget);

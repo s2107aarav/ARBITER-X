@@ -156,7 +156,14 @@ ReplayResult replay_journal(const std::string& path, BookImpl impl, u64 until_se
             const u64 id = e.type == EvType::BookAdd ? e.a : e.b;
             if (id <= DomainBounds::kMaxOrderId) rep.next_order_id = std::max(rep.next_order_id, id + 1);
         }
-        if (e.seq <= skip_through_seq) continue;
+        if (e.seq <= skip_through_seq) {
+            if (e.seq == skip_through_seq &&
+                (e.t != base->logical_t || (e.type == EvType::Checkpoint && e.b != replayer->state_hash()))) {
+                rep.status = fail(Errc::SnapshotInvalid, e.seq);
+                break;
+            }
+            continue;
+        }
         rep.final_seq = e.seq;
         rep.logical_t = e.t;
 

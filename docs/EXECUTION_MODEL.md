@@ -69,7 +69,9 @@ decision -> depart -> gateway -> match -> fill
 
 Stage durations are recorded per FILL (partial maker fills included) into
 RunStats histograms backed by exact integer sums; the four stage sums equal
-the end-to-end decision->fill sum over the same fill set (test-locked:
+the end-to-end decision->fill sum over the same fill set. On restore with tracing enabled, orders already
+in flight lack stage timestamps, so both timing series resume with newly
+sent orders (test-locked:
 `stage_trace_sums_exact_with_partial_fills`). A maker fill's
 `gateway->match` interval is the RESTING time until the taker arrived, the
 decomposition stays exact; it is not a claim that the exchange spent that

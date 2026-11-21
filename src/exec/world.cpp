@@ -205,6 +205,9 @@ void World::process(const WorldEvent& ev) {
             BotAction a = sim_.next_action();
             switch (a.kind) {
                 case BotAction::Kind::Add:
+                    enter_book(a.ord, now_);
+                    if (!book_.has(a.ord.id)) sim_.retire_provider_order(a.ord.id);
+                    break;
                 case BotAction::Kind::Taker:
                     enter_book(a.ord, now_);
                     break;
@@ -328,14 +331,9 @@ void World::process(const WorldEvent& ev) {
             // STRATEGY FEED DECODE: the notification is reconstructed from
             // its wire frame; a corrupted frame is dropped (counted), the
             // strategy never sees it, identical to a real feed handler.
-            DecodedFrame df;
-            const bool decoded_ok = [&] {
-                auto d = wire_decode(reinterpret_cast<const u8*>(n.frame.data()), n.frame.size());
-                if (!d) return false;
-                df = std::move(d.value);
-                return true;
-            }();
-            if (!decoded_ok || df.channel != 3 || (df.flags & kFlagExecReport) == 0) {
+            const auto decoded = wire_decode(reinterpret_cast<const u8*>(n.frame.data()), n.frame.size());
+            const auto& df = decoded.value;
+            if (!decoded || df.channel != 3 || df.flags != kFlagExecReport) {
                 ++stats_.wire_frames_corrupted;
                 if (observer_) observer_->receiver(observation(), 3, n.transport_seq, ev.tiebreak,
                                                     ReceiveOutcome::DecodeRejected);
@@ -375,7 +373,8 @@ void World::process(const WorldEvent& ev) {
                 f.taker_side = x.taker_side;
                 f.maker_side = x.maker_side;
                 resolve_open_fill_reports(f);
-                deliver_fill(f, now_);
+                const i64 fee_per_lot = x.reason ? static_cast<i64>(x.reason - 1) : cfg_.fee_per_lot;
+                deliver_fill(f, now_, fee_per_lot);
             } else if (x.kind == 1) {
                 if (x.taker_acct == cfg_.mm.account) mm_.on_reject(x.taker_id);
                 drop_stage_trace(x.taker_id);
@@ -563,6 +562,7 @@ void World::enter_book(Order o, LogicalNs t) {
     for (const Fill& f : fills) {
         mds.push_back(ev_md_trade(0, t, f.price, f.qty));
         if (!book_.find(f.maker_order_id)) {  // maker fully consumed
+            sim_.retire_provider_order(f.maker_order_id);
             mds.push_back(ev_md_cancel(0, t, f.maker_order_id));
             // The maker reached an exchange-terminal state in THIS match:
             // release whatever reservation remains and run terminal trace
@@ -805,19 +805,14 @@ void World::gap_recover() {
     }
 }
 
-void World::deliver_fill(const Fill& f, LogicalNs t) {
+void World::deliver_fill(const Fill& f, LogicalNs t, i64 fee_per_lot) {
     // exchange fee schedule: flat fee per lot, charged to each strategy
     // participant of this fill (bots are documented as fee-exempt v1).
-    const auto charge_fee = [&](u32 account, Qty qty) {
-        if (cfg_.fee_per_lot == 0) return;
-        if (account == cfg_.mm.account) {
-            mm_.on_fee(cfg_.fee_per_lot * static_cast<i64>(qty));
-        } else if (account == cfg_.momentum.account) {
-            mom_.on_fee(cfg_.fee_per_lot * static_cast<i64>(qty));
-        }
-    };
-    charge_fee(f.taker_account, f.qty);
-    charge_fee(f.maker_account, f.qty);
+    const i64 fee = saturating_mul_i64(fee_per_lot, static_cast<i64>(f.qty));
+    for (u32 account : {f.taker_account, f.maker_account}) {
+        if (account == cfg_.mm.account) mm_.on_fee(fee);
+        else if (account == cfg_.momentum.account) mom_.on_fee(fee);
+    }
 
     const auto note_latency = [&](u64 order_id) {
         auto it = order_sent_t_.find(order_id);
@@ -1023,7 +1018,7 @@ Order World::decode_order_frame(const std::string& frame, bool& is_cancel, bool&
     return o;
 }
 
-std::string World::encode_notify_frame(const Notify& n, u64 seq) {
+std::string World::encode_notify_frame(const Notify& n, i64 fee_per_lot) {
     ExecReport r;
     r.kind = n.kind;
     r.taker_id = n.fill.taker_order_id;
@@ -1034,8 +1029,9 @@ std::string World::encode_notify_frame(const Notify& n, u64 seq) {
     r.qty = n.fill.qty;
     r.taker_side = n.fill.taker_side;
     r.maker_side = n.fill.maker_side;
-    if (n.kind == 1) r.reason = n.fill.maker_order_id;  // reject reason rides the maker-id slot
-    return wire_encode_exec(3 /* exec channel */, seq, r);
+    if (n.kind == 0) r.reason = static_cast<u64>(fee_per_lot) + 1;
+    if (n.kind == 1) r.reason = n.fill.maker_order_id;
+    return wire_encode_exec(3, n.transport_seq, r);
 }
 
 // Exec-channel transmission: sequence assignment, loss/corruption/duplication
@@ -1043,7 +1039,7 @@ std::string World::encode_notify_frame(const Notify& n, u64 seq) {
 // deliver and decode) was scheduled.
 bool World::send_notify(Notify n, LogicalNs t) {
     n.transport_seq = ++exec_seq_;
-    n.frame = encode_notify_frame(n, n.transport_seq);
+    n.frame = encode_notify_frame(n, cfg_.fee_per_lot);
     ++stats_.wire_frames_encoded;  // created before network loss
     const DeliveryPlan d = exec_ch_.next_delivery();
     if (d.drop) {

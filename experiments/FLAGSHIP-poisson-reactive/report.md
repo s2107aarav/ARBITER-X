@@ -28,21 +28,21 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 
 | cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | Taker PnL | Taker filled lots |
 |---|---|---|---|---|---|---|
-| md0.000 | md+0,dec+4000,ord+4000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.125 | md+1000,dec+3500,ord+3500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.250 | md+2000,dec+3000,ord+3000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.375 | md+3000,dec+2500,ord+2500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.500 | md+4000,dec+2000,ord+2000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.625 | md+5000,dec+1500,ord+1500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.750 | md+6000,dec+1000,ord+1000 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md0.875 | md+7000,dec+500,ord+500 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
-| md1.000 | md+8000,dec+0,ord+0 | 168.8 | 168.8 | +1.00 | 0.0 | 0.0 |
+| md0.000 | md+0,dec+4000,ord+4000 | 184.4 | 206.2 | +0.92 | 0.0 | 0.0 |
+| md0.125 | md+1000,dec+3500,ord+3500 | 181.2 | 203.1 | +0.91 | 0.0 | 0.0 |
+| md0.250 | md+2000,dec+3000,ord+3000 | 181.2 | 203.1 | +0.91 | 0.0 | 0.0 |
+| md0.375 | md+3000,dec+2500,ord+2500 | 181.2 | 203.1 | +0.91 | 0.0 | 0.0 |
+| md0.500 | md+4000,dec+2000,ord+2000 | 181.2 | 200.0 | +0.92 | 0.0 | 0.0 |
+| md0.625 | md+5000,dec+1500,ord+1500 | 181.2 | 200.0 | +0.92 | 0.0 | 0.0 |
+| md0.750 | md+6000,dec+1000,ord+1000 | 181.2 | 200.0 | +0.92 | 0.0 | 0.0 |
+| md0.875 | md+7000,dec+500,ord+500 | 181.2 | 203.1 | +0.91 | 0.0 | 0.0 |
+| md1.000 | md+8000,dec+0,ord+0 | 181.2 | 203.1 | +0.91 | 0.0 | 0.0 |
 
 ## Paired contrasts (MM PnL, b − a, per seed)
 
 | contrast | mean diff | 95% CI (iid) | p (perm) | p (Holm) | per-lot | significant | material |
 |---|---|---|---|---|---|---|---|
-| md0.000 → md0.125 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
+| md0.000 → md0.125 | -3.1 | [-9.2, +3.0] | 1.0000 | 1.0000 | -0.02 | no | no |
 | md0.125 → md0.250 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
 | md0.250 → md0.375 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
 | md0.375 → md0.500 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
@@ -50,11 +50,11 @@ reactive (bots observe the live touch and react to strategy quotes; the measured
 | md0.625 → md0.750 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
 | md0.750 → md0.875 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
 | md0.875 → md1.000 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
-| md0.000 → md1.000 | +0.0 | [+0.0, +0.0] | 1.0000 | 1.0000 | +0.00 | no | no |
+| md0.000 → md1.000 | -3.1 | [-9.2, +3.0] | 1.0000 | 1.0000 | -0.02 | no | no |
 
-- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff +0.0 ticks*qty (per-lot +0.00), Holm p=1.0000, not significant
+- primary contrast (md0.000 -> md1.000): mean paired MM PnL diff -3.1 ticks*qty (per-lot -0.02), Holm p=1.0000, not significant
 - economic materiality (primary): not material (threshold 1.00 ticks*qty/lot)
-- MM filled lots across the slice: 168.8 (md share 1) vs 168.8 (md share 0): fill mechanics invariant to placement
+- MM filled lots across the slice: 203.1 (md share 1) vs 206.2 (md share 0): placement changes fill mechanics
 - taker (momentum) PnL across the slice: 0.0 -> 0.0 (invariant)
 - taker primary-contrast paired PnL diff: +0.0 (se 0.0, perm p=1.0000) — not significant
 - The primary contrast is inconclusive after Holm correction. The point estimate falls below the materiality threshold.

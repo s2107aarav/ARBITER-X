@@ -215,6 +215,9 @@ std::string validate_world_config(const WorldConfig& c) {
     if (c.mm.max_inventory < 0 || c.mm.max_inventory > kMaxPosition)
         return bad("mm.max_inventory outside the safe arithmetic range");
     if (c.momentum.cooldown_ns <= 0) return bad("momentum.cooldown_ns <= 0");
+    if (c.warmup_ns > std::numeric_limits<LogicalNs>::max() -
+                          std::max(c.mm.requote_interval_ns, c.momentum.cooldown_ns))
+        return bad("first strategy timer exceeds the logical clock range");
     if (c.momentum.size == 0 || c.momentum.size > DomainBounds::kMaxQty)
         return bad("momentum.size outside the representable quantity domain");
     if (c.momentum.min_signal <= 0) return bad("momentum.min_signal <= 0");

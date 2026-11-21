@@ -100,7 +100,8 @@ Report run_differential(const std::vector<Op>& ops, const Options& opts) {
         } else {
             const auto ref_ladder = ref.to_ladder(), opt_ladder = opt.to_ladder();
             const u64 href = canonical_book_hash(ref_ladder);
-            if (href != canonical_book_hash(opt_ladder) || !ladders_equal(ref_ladder, opt_ladder)) {
+            if (ref.total_bid_qty() != opt.total_bid_qty() || ref.total_ask_qty() != opt.total_ask_qty() ||
+                href != canonical_book_hash(opt_ladder) || !ladders_equal(ref_ladder, opt_ladder)) {
                 ++rep.ladder_mismatches;
                 diverge("ladder view/hash mismatch", href);
             }

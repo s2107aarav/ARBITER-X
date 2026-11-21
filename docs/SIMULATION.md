@@ -6,7 +6,7 @@ The `MarketSim` bot population generates provider and taker flow:
 
 * **Provider bots** (`provider_arrival_per_ms`, 3 accounts): Poisson
   arrivals; join inside the spread at the observed touch (sometimes
-  improving the quote by extra ticks); random cancels (`cancel_fraction`). Providers supply liquidity on both sides.
+  improving the quote by extra ticks). Random cancels (`cancel_fraction`) target resting provider orders.
 * **Taker bots** (`taker_arrival_per_ms`): Poisson arrivals of aggressive
   IOC orders with a momentum bias from recent trade directions
   (`0.5 + 0.08 * bias`, bias clamped ±4).
@@ -19,19 +19,16 @@ The `MarketSim` bot population generates provider and taker flow:
      inter-arrival by factor (1-k) (one-shot boost; no extra RNG draw);
   2. *sign persistence*: a taker follows the previous taker's side with
      probability k.
-  k = 0 reproduces the historical memoryless process bit-for-bit (verified:
-  `flow_poisson_null_is_bit_identical_to_historical_default`). This is not
-  a Hawkes process; it is a minimal, seedable, snapshot-safe
-  self-excitation with a clean Poisson null, chosen deliberately over a
-  full Hawkes calibration (which the research question does not need).
+  k = 0 uses the memoryless taker process within each regime. The one-shot
+  boost and sign persistence give a seedable, snapshot-safe clustered control.
 
 ## Measured regime properties (seed 99, 300ms, simstats)
 
 | quantity | k=0 (Poisson null) | k=0.9 (clustered) |
 |---|---|---|
-| trades | 6,827 (22.8k/s) | 44,648 (148.8k/s) |
-| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.414 (runs emerge) |
-| trade inter-arrival burstiness (cv) | 1.72 (regime chain alone) | 2.97 |
+| trades | 6,762 (22.5k/s) | 32,034 (106.8k/s) |
+| trade-sign persistence (repeat rate) | 0.000 (perfect alternation) | 0.416 |
+| trade inter-arrival burstiness (cv) | 1.71 (regime chain alone) | 2.55 |
 | mid lag-1 autocorr @ trade times | ~0.0 | ~1.0 |
 
 Calibration facts (simulator properties, NOT claims of
@@ -59,7 +56,6 @@ dependence (docs/COUNTERFACTUALS.md).
 
 ## Not claimed
 
-No fidelity to any specific venue. Spread is 1 tick at p50 by construction
-(half_spread=1 market maker inside a 2-tick band); depth dynamics are
-stylized; sizes are homogeneous per bot class. `simstats` reports these as
-model choices.
+The simulator models stylized depth and homogeneous sizes within each bot
+class. The median spread in the runs above was 1 tick. `simstats` measures
+spread for each run.

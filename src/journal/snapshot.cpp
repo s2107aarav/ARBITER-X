@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
-#include <limits>
-#include <cstdio>
 #include <unistd.h>
 #include <filesystem>
 #include <string>
@@ -31,6 +29,8 @@ bool checkpoint_seq(std::string_view name, u64& seq) {
 }  // namespace
 
 Status write_snapshot(const std::string& path, const SnapshotData& snap) {
+    if (const Status st = check_book_invariants(snap.ladder); !st)
+        return fail(Errc::SnapshotInvalid, st.context);
     ByteWriter body;
     body.put_u64(snap.config_hash);
     body.put_u64(snap.last_event_seq);

@@ -53,7 +53,7 @@ std::string wire_encode_snapshot(u8 channel, u64 md_seq, const void* payload, si
 // 3 = cancel confirmed.
 struct ExecReport {
     u8 kind = 0;
-    u64 reason = 0;        // RiskReason when kind == 1
+    u64 reason = 0;        // fill fee per lot + 1 (0 in older frames), or reject reason
     u64 taker_id = 0, maker_id = 0;
     u32 taker_acct = 0, maker_acct = 0;
     i64 price = 0;

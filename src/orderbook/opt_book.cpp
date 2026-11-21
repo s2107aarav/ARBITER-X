@@ -74,6 +74,7 @@ void OptBook::attach(Side s, u32 off, u32 nidx) noexcept {
     lvl.tail = nidx;
     lvl.count++;
     lvl.total += n.ord.leaves;
+    side_qty(s) += n.ord.leaves;
     const Price p = n.ord.price;
     if (is_buy(s)) {
         if (p > best_bid_) best_bid_ = p;
@@ -95,6 +96,7 @@ void OptBook::detach(Side s, u32 off, u32 nidx) noexcept {
         lvl.tail = n.prev;
     lvl.count--;
     lvl.total -= n.ord.leaves;
+    side_qty(s) -= n.ord.leaves;
     if (lvl.count == 0) {
         const Price p = price_for(s, off);
         if (is_buy(s) && p == best_bid_) recompute_best_after_empty(s, off);
@@ -106,7 +108,7 @@ void OptBook::recompute_best_after_empty(Side s, u32 emptied_off) noexcept {
     const auto& arr = is_buy(s) ? bids_ : asks_;
     const u32 span = static_cast<u32>(arr.size());
     Price best = is_buy(s) ? kNoBid : kNoAsk;
-    for (u32 i = emptied_off; i < span; ++i) {
+    for (u32 i = emptied_off; side_qty(s) != 0 && i < span; ++i) {
         if (arr[i].count != 0) {
             best = price_for(s, i);
             break;
@@ -146,62 +148,36 @@ Qty OptBook::match_against(Order& t, std::vector<Fill>& fills) {
     Qty matched = 0;
     const Price lim = (t.type == OrderType::Limit) ? t.price
                                                    : (is_buy(t.side) ? DomainBounds::kMaxPrice : 0);
-    if (is_buy(t.side)) {
-        while (t.leaves > 0) {
-            if (best_ask_ == kNoAsk || !crosses(t.side, lim, best_ask_)) break;
-            const Price lvl_price = best_ask_;
-            const u32 off = offset_for(Side::Sell, lvl_price);
-            Level& lvl = asks_[off];
-            while (t.leaves > 0 && lvl.head != kNone) {
-                const u32 midx = lvl.head;
-                Order& m = pool_[midx].ord;
-                const Qty q = std::min(t.leaves, m.leaves);
-                fills.push_back(Fill{t.id, m.id, m.account, t.account, lvl_price, q, t.arrival, Liquidity::Maker});
-                m.leaves -= q;
-                lvl.total -= q;
-                t.leaves -= q;
-                matched += q;
-                if (m.leaves == 0) {
-                    lvl.head = pool_[midx].next;
-                    if (lvl.head != kNone)
-                        pool_[lvl.head].prev = kNone;
-                    else
-                        lvl.tail = kNone;
-                    lvl.count--;
-                    index_.erase(m.id);
-                    free_node(midx);
-                }
+    const Side maker_side = is_buy(t.side) ? Side::Sell : Side::Buy;
+    const Price& best = is_buy(t.side) ? best_ask_ : best_bid_;
+    Qty& maker_qty = side_qty(maker_side);
+    while (t.leaves > 0 && best != kNoAsk && crosses(t.side, lim, best)) {
+        const Price price = best;
+        const u32 off = offset_for(maker_side, price);
+        Level& lvl = level_for(maker_side, off);
+        while (t.leaves > 0 && lvl.head != kNone) {
+            const u32 midx = lvl.head;
+            Order& maker = pool_[midx].ord;
+            const Qty q = std::min(t.leaves, maker.leaves);
+            fills.push_back(Fill{t.id, maker.id, maker.account, t.account, price, q,
+                                 t.arrival, Liquidity::Maker});
+            maker.leaves -= q;
+            maker_qty -= q;
+            lvl.total -= q;
+            t.leaves -= q;
+            matched += q;
+            if (maker.leaves == 0) {
+                lvl.head = pool_[midx].next;
+                if (lvl.head != kNone)
+                    pool_[lvl.head].prev = kNone;
+                else
+                    lvl.tail = kNone;
+                --lvl.count;
+                index_.erase(maker.id);
+                free_node(midx);
             }
-            if (lvl.count == 0) recompute_best_after_empty(Side::Sell, off);
         }
-    } else {
-        while (t.leaves > 0) {
-            if (best_bid_ == kNoBid || !crosses(t.side, lim, best_bid_)) break;
-            const Price lvl_price = best_bid_;
-            const u32 off = offset_for(Side::Buy, lvl_price);
-            Level& lvl = bids_[off];
-            while (t.leaves > 0 && lvl.head != kNone) {
-                const u32 midx = lvl.head;
-                Order& m = pool_[midx].ord;
-                const Qty q = std::min(t.leaves, m.leaves);
-                fills.push_back(Fill{t.id, m.id, m.account, t.account, lvl_price, q, t.arrival, Liquidity::Maker});
-                m.leaves -= q;
-                lvl.total -= q;
-                t.leaves -= q;
-                matched += q;
-                if (m.leaves == 0) {
-                    lvl.head = pool_[midx].next;
-                    if (lvl.head != kNone)
-                        pool_[lvl.head].prev = kNone;
-                    else
-                        lvl.tail = kNone;
-                    lvl.count--;
-                    index_.erase(m.id);
-                    free_node(midx);
-                }
-            }
-            if (lvl.count == 0) recompute_best_after_empty(Side::Buy, off);
-        }
+        if (lvl.count == 0) recompute_best_after_empty(maker_side, off);
     }
     return matched;
 }
@@ -216,18 +192,13 @@ Price OptBook::best_excluding(Side side, const std::unordered_set<u64>& ids) con
     return 0;
 }
 
-Qty OptBook::available_within(Side taker_side, Price limit_price) const noexcept {
+Qty OptBook::available_within(Side taker_side, Price limit_price, Qty needed) const noexcept {
     const Side maker_side = is_buy(taker_side) ? Side::Sell : Side::Buy;
     const Price best = is_buy(taker_side) ? best_ask_ : best_bid_;
-    if (best == kNoAsk || best == kNoBid) return 0;
-
-    // The raw span is only used to reject a non-crossing limit.  A market
-    // order uses a sentinel limit, so its raw span is meaningless for path
-    // selection; compare the clamped ladder range with the index capacity.
-    const u64 level_span = is_buy(taker_side)
-                               ? (best > limit_price ? 0u : static_cast<u64>(limit_price - best) + 1u)
-                               : (best < limit_price ? 0u : static_cast<u64>(best - limit_price) + 1u);
-    if (level_span == 0) return 0;
+    if (best == kNoAsk || !crosses(taker_side, limit_price, best)) return 0;
+    const auto& levels = is_buy(taker_side) ? asks_ : bids_;
+    if (is_buy(taker_side) ? limit_price >= opt_.max_tick : limit_price <= opt_.min_tick)
+        return is_buy(taker_side) ? ask_qty_ : bid_qty_;
 
     const Price bounded_limit = is_buy(taker_side) ? std::min(limit_price, opt_.max_tick)
                                                     : std::max(limit_price, opt_.min_tick);
@@ -248,8 +219,8 @@ Qty OptBook::available_within(Side taker_side, Price limit_price) const noexcept
 
     Qty total = 0;
     for (u32 off = begin;; ++off) {
-        total += level_for(maker_side, off).total;
-        if (off == end) break;
+        total += levels[off].total;
+        if (off == end || total >= needed) break;
     }
     return total;
 }
@@ -276,9 +247,9 @@ Status OptBook::add_order(const Order& o, std::vector<Fill>& fills, AddResult* o
 
     const Price lim = (o.type == OrderType::Limit) ? o.price
                                                    : (is_buy(o.side) ? DomainBounds::kMaxPrice : 0);
-    const Qty available = available_within(o.side, lim);
     const bool would_rest = o.type == OrderType::Limit && (o.tif == Tif::GTC || o.tif == Tif::GTD);
-    const bool partially_executable = available < o.qty;
+    const bool partially_executable = (would_rest || o.tif == Tif::FOK) &&
+                                      available_within(o.side, lim, o.qty) < o.qty;
     // CONSERVATIVE active-order cap (aligned with RefBook, documented): a
     // resting entry that will not fully execute needs one slot beyond the
     // current live count; at the cap it is rejected BEFORE matching. Maker
@@ -339,12 +310,11 @@ Status OptBook::replace(u64 order_id, const Order& replacement, std::vector<Fill
     if (replacement.tif == Tif::FOK) {
         const Price lim = replacement.type == OrderType::Limit
                               ? replacement.price : (is_buy(replacement.side) ? DomainBounds::kMaxPrice : 0);
-        Qty available = available_within(replacement.side, lim);
-        // The original's own contra liquidity is removed by the replacement,
-        // so it is excluded from the availability projection.
+        Qty needed = replacement.qty;
+        // The original's contra liquidity goes away before matching.
         if (original->side != replacement.side && crosses(replacement.side, lim, original->price))
-            available = available > original->leaves ? available - original->leaves : 0;
-        if (available < replacement.qty)
+            needed += original->leaves;
+        if (available_within(replacement.side, lim, needed) < needed)
             return fail(Errc::InsufficientLiquidity, replacement.id);
     }
     // Cancel releases the node and index slot needed by a resting replacement.
@@ -356,17 +326,6 @@ const Order* OptBook::find(u64 order_id) const noexcept {
     const u64* packed = index_.find(order_id);
     if (!packed) return nullptr;
     return &pool_[loc_node(*packed)].ord;
-}
-
-Qty OptBook::total_bid_qty() const noexcept {
-    Qty t = 0;
-    for (const auto& lvl : bids_) t += lvl.total;
-    return t;
-}
-Qty OptBook::total_ask_qty() const noexcept {
-    Qty t = 0;
-    for (const auto& lvl : asks_) t += lvl.total;
-    return t;
 }
 
 size_t OptBook::level_count() const noexcept {
@@ -421,6 +380,7 @@ Qty OptBook::consume_at(Side s, Price p, Qty qty) noexcept {
             free_node(hidx);
         }
     }
+    side_qty(s) -= consumed;
     // The cached best must advance when consumption empties the best level,
     // otherwise best_bid()/best_ask() report stale (or crossed) prices. This
     // bug was invisible to ladder-hash differential testing (caches are not

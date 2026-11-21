@@ -302,18 +302,13 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
             for (const auto& lvl : lv) {
                 if (lvl.price < cfg.book_min_price || lvl.price > cfg.book_max_price)
                     return bad(40);
-                for (const auto& o : lvl.orders) {
-                    if (o.id == 0 || o.id > DomainBounds::kMaxOrderId) return bad(40);
-                    if (o.qty == 0 || o.leaves == 0 || o.leaves > o.qty) return bad(40);
-                    ids.push_back(o.id);
-                }
+                for (const auto& o : lvl.orders) ids.push_back(o.id);
             }
             return good();
         };
         if (const Status st = check_side(s.book.bids); !st) return st;
         if (const Status st = check_side(s.book.asks); !st) return st;
         std::sort(ids.begin(), ids.end());
-        if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return bad(40);
         // ownership: real resting orders only, no duplicates, account >= 1
         for (const auto& [id, acct] : s.order_accounts) {
             if (id == 0 || acct == 0) return bad(41);
@@ -404,8 +399,8 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         if (f.taker_id == 0 || f.taker_acct == 0 || f.t < 0 || f.t > s.now) return bad(47);
         if (f.taker_side > 1 || f.maker_side > 1 || f.maker_liq > 1) return bad(47);
         if (n.kind == 0) {
-            if (f.maker_id == 0 || f.maker_acct == 0 || f.price <= 0 || f.qty == 0)
-                return bad(47);
+            if (f.maker_id == 0 || f.maker_acct == 0 || f.price <= 0 || f.qty == 0 ||
+                f.qty > DomainBounds::kMaxQty) return bad(47);
         } else if (n.kind == 1) {
             // the reason slot carries a RiskReason (0..7) or, for a
             // book-admission reject, the Errc code that add_order returned
@@ -429,7 +424,9 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
                   x.kind != n.kind || x.taker_id != f.taker_id || x.maker_id != f.maker_id ||
                   x.taker_acct != f.taker_acct || x.maker_acct != f.maker_acct || x.price != f.price ||
                   x.qty != f.qty || static_cast<u8>(x.taker_side) != f.taker_side ||
-                  static_cast<u8>(x.maker_side) != f.maker_side || (n.kind == 1 && x.reason != f.maker_id)))
+                  static_cast<u8>(x.maker_side) != f.maker_side ||
+                  (n.kind == 0 && x.reason > static_cast<u64>(std::numeric_limits<i64>::max()) / DomainBounds::kMaxQty + 1) ||
+                  (n.kind == 1 && x.reason != f.maker_id)))
             return bad(47);
     }
 
@@ -560,11 +557,10 @@ Status validate_snapshot_semantics(const WorldSnapshot& s, const WorldConfig& cf
         if (s.sim.last_trade_px < 0 || s.sim.last_trade_px > DomainBounds::kMaxPrice ||
             s.sim.last_bb < 0 || s.sim.last_bb > DomainBounds::kMaxPrice ||
             s.sim.last_ba < 0 || s.sim.last_ba > DomainBounds::kMaxPrice + 1) return bad(54);
-        std::vector<u64> ids = s.sim.live_provider_orders;
-        for (u64 id : ids)
-            if (id == 0) return bad(54);
-        std::sort(ids.begin(), ids.end());
-        if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return bad(54);
+        const auto& ids = s.sim.live_provider_orders;
+        if (!std::is_sorted(ids.begin(), ids.end()) ||
+            std::adjacent_find(ids.begin(), ids.end()) != ids.end() ||
+            (!ids.empty() && (ids.front() == 0 || ids.back() >= s.sim.next_bot_id))) return bad(54);
     }
 
     // ---- decision-time table + open fill reports ----
@@ -748,6 +744,9 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
         return fail(Errc::SnapshotInvalid, 1);
     if (cfg_hash_ != continuation_cfg.hash()) return fail(Errc::SnapshotInvalid, 3);
     if (s.master_seed != master_seed_) return fail(Errc::SnapshotInvalid, 2);
+    if (s.config.mm.account != cfg_.mm.account || s.config.momentum.account != cfg_.momentum.account ||
+        s.config.momentum.id_base != cfg_.momentum.id_base)
+        return fail(Errc::InvalidArgument);
     // Reject semantically impossible state before rebuilding. Later rebuild or
     // final hash verification can still fail after mutation: restore into a
     // fresh World and discard it on any failure.
@@ -894,7 +893,9 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
         markouts_.push_back(mp);
     }
     order_sent_t_.clear();
-    for (const auto& [id, t] : s.order_sent_t) order_sent_t_[id] = t;
+    // Format 15 lacks stage timestamps. Resume both timing series together.
+    if (!cfg_.stage_tracing)
+        for (const auto& [id, t] : s.order_sent_t) order_sent_t_[id] = t;
     open_fill_reports_.clear();
     for (const auto& [id, n] : s.open_fill_reports) open_fill_reports_[id] = n;
     stages_.clear();  // in-flight stage traces die with their orders
@@ -928,6 +929,14 @@ Status World::restore_snapshot(const WorldSnapshot& s, const WorldConfig& contin
 
     // self-validation: a complete snapshot must reproduce the captured hash
     if (const u64 h = state_hash(); h != s.state_hash) return fail(Errc::SnapshotInvalid, h);
+    if (s.config.fee_per_lot != cfg_.fee_per_lot) {
+        for (auto& n : notifies_) {
+            if (n.delivered || n.kind != 0) continue;
+            const auto d = wire_decode(reinterpret_cast<const u8*>(n.frame.data()), n.frame.size());
+            if (d && d.value.exec.reason == 0)
+                n.frame = encode_notify_frame(n, s.config.fee_per_lot);
+        }
+    }
     return open_journal(true);  // a continuation may only create a new journal
 }
 
