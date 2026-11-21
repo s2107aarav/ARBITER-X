@@ -20,7 +20,7 @@ ctest --test-dir "$BUILD_DIR" --output-on-failure
 "$BUILD_DIR/arbiter" worldjump --snap artifacts/repro.wsnap --events 20000
 "$BUILD_DIR/arbiter" worldfork --snap artifacts/repro.wsnap --variable half_spread=4 --events 20000
 for study in clustered-reactive poisson-reactive clustered-frozen; do
-  "$BUILD_DIR/arbiter" flagship --reproduce "experiments/FLAGSHIP-$study/results.json"
+  "$BUILD_DIR/arbiter" flagship --reproduce "experiments/FLAGSHIP-$study/results.json" --report "experiments/FLAGSHIP-$study/report.md"
 done
 "$BUILD_DIR/arbiter_bench" all > artifacts/benchmarks.log
 cat artifacts/benchmarks.log

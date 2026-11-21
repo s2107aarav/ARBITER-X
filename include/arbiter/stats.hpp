@@ -43,6 +43,12 @@ struct CorrResult {
 };
 CorrResult pearson(const std::vector<double>& x, const std::vector<double>& y);
 
+// Two-sided sign-flip test of paired differences. The null requires joint
+// invariance to independent flips within pairs. Larger samples use the
+// seeded Monte Carlo test, counting the observed assignment once.
+inline constexpr size_t kExactSignFlipMaxPairs = 20;
+double paired_sign_flip_pvalue(const std::vector<double>& differences, u64 seed, u64 reps);
+
 // Multiple-testing corrections over a family of p-values.
 std::vector<double> holm(const std::vector<double>& p);        // Holm step-down FWER
 std::vector<double> bonferroni(const std::vector<double>& p);  // min(1, p*m)

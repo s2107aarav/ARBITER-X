@@ -25,5 +25,5 @@ printf '%s\n' '== counterfactual fork =='
 
 printf '%s\n' '== fixed-total allocation and exact reproduction =='
 "$ARB" flagship --config configs/flagship_clustered.axexp --out "$OUT/allocation"
-"$ARB" flagship --reproduce "$OUT/allocation/results.json"
+"$ARB" flagship --reproduce "$OUT/allocation/results.json" --report "$OUT/allocation/report.md"
 printf 'output: %s\n' "$OUT"

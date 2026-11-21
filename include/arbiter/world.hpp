@@ -99,6 +99,8 @@ public:
     const RunStats& stats() const noexcept { return stats_; }
     const std::string& journal_path() const noexcept { return journal_path_; }
     u64 events_processed() const noexcept { return events_; }
+    u64 orders_sent_by(u32 account) const;
+    u64 risk_rejected_by(u32 account) const { return risk_.state_of(account).rejected; }
     LogicalNs now() const noexcept { return now_; }
 
     // internal event kinds used with EvType

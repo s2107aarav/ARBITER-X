@@ -22,10 +22,10 @@ This document lists the model's limits. Claims that contradict it are bugs.
   the simulator's structural assumptions, not identification about real
   markets, and not "causal proof" (shared randomness is variance control,
   not causal identification).
-- The clustered regime's measured effects are heavy-tailed across seeds;
-  the flagship result at L=8µs is UNCERTAIN (the reactive point estimate exceeds the materiality threshold in magnitude,
-  with Holm-adjusted p = 1.0 across eight seeds, see
-  docs/EXPERIMENTS/flagship_allocation.md).
+- The clustered pilot differences vary substantially across seeds.
+  the pilot at L=8 µs could not reject at alpha 0.05 under the nine-comparison
+  correction. Its reactive point estimate exceeded the materiality threshold
+  in magnitude. See docs/EXPERIMENTS/flagship_allocation.md.
 - Frozen-vs-reactive differences show the reactive estimate includes
   observation-channel feedback; the split does not estimate real-market
   interference in general.

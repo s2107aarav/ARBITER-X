@@ -29,11 +29,9 @@
 //     and a predefined economic threshold.
 //
 // HONESTY RULES BAKED IN:
-//   * The engine-verified stage trace confirms every cell realized the
-//     intended allocation (mean realized per-stage latencies recorded).
-//   * Kill conditions (documented in the report): effect absent under
-//     clustered flow / present under Poisson / below the economic
-//     threshold / unstable across interference modes.
+//   * Configured allocations and observed stage samples are reported separately.
+//   * The eight-seed retained grid is a pilot. Its exact p-value resolution
+//     prevents rejection across the full family at alpha=0.05.
 //   * "Paired counterfactual estimate under the simulator's structural
 //     assumptions", never "causal proof about real markets".
 
@@ -82,7 +80,7 @@ struct FlagshipConfig {
     // reported as "not economically material" regardless of p-values.
     double economic_threshold_ticks_qty_per_lot = 1.0;
     // stats
-    size_t hac_lag = 2;  // small: seed-level series, mild dependence
+    size_t hac_lag = 2;  // legacy input retained in design identity; no HAC interval is reported
     u64 permutation_reps = 5000;
 };
 
@@ -100,10 +98,13 @@ struct CellSeedOutcome {
     u64 mm_orders_sent = 0;
     u64 mm_cancels_sent = 0;
     u64 mm_orders_rejected = 0;
-    // adverse selection (mean markout, ticks)
+    // Adverse selection. Means are defined only when the sample count is nonzero.
+    u64 mm_markout_samples = 0, mom_markout_samples = 0;
     double mm_markout_100us = 0.0;
     double mom_markout_100us = 0.0;
-    // realized stage latency means (ns), verifies the allocation took hold
+    // Measured on separate populations of accepted MD arrivals and delivered
+    // strategy fill legs. A zero sample count means the mean is undefined.
+    u64 md_transit_samples = 0, action_trace_samples = 0;
     double mean_md_transit_ns = 0.0;
     double mean_decision_ns = 0.0;
     double mean_order_transit_ns = 0.0;
@@ -116,7 +117,8 @@ struct CellResult {
     std::string name;             // e.g. "md0.500"
     LatencyAllocation alloc;
     std::vector<CellSeedOutcome> per_seed;  // aligned with cfg.seeds
-    // cross-seed summary (mean over seeds)
+    // Cross-seed summary. Markouts omit seeds without a recorded probe.
+    u64 mm_markout_seeds = 0, mom_markout_seeds = 0;
     double mean_mm_pnl = 0.0;
     double mean_mom_pnl = 0.0;
     double mean_mm_fills = 0.0;
@@ -134,7 +136,7 @@ struct PairComparison {
     std::vector<double> mm_pnl_diff;
     std::vector<double> mom_pnl_diff;
     std::vector<double> mm_fills_diff;
-    std::vector<double> mm_markout_diff;
+    std::vector<double> mm_markout_diff;  // only pairs with markouts on both sides
     // inference on mm_pnl_diff (primary endpoint)
     double mean_diff = 0.0;
     double se_iid = 0.0;
@@ -143,6 +145,7 @@ struct PairComparison {
     double p_holm = 1.0;            // Holm-adjusted across the pair family
     // economic interpretation inputs
     double pnl_diff_per_lot = 0.0;  // mean PnL diff per filled lot (ticks*qty/lot)
+    bool per_lot_available = true;
     bool statistically_significant = false;
     bool economically_material = false;
     const char* verdict() const noexcept;
@@ -168,8 +171,8 @@ std::string flagship_to_json(const FlagshipResult& r);
 std::string flagship_report_md(const FlagshipResult& r);
 Status write_flagship_artifacts(const std::string& dir, const FlagshipResult& r);
 
-// Reproduce: re-run from a written flagship artifact JSON and verify every
-// recorded per-seed state hash + economics bit-for-bit.
+// Re-run the JSON design and compare canonical bytes, optionally including
+// the Markdown report. The comparison preserves recorded producer metadata.
 struct FlagshipReproReport {
     bool ok = false;
     u64 cells_checked = 0;
@@ -177,6 +180,7 @@ struct FlagshipReproReport {
     u64 mismatches = 0;
     std::string detail;
 };
-FlagshipReproReport flagship_reproduce(const std::string& artifact_path);
+FlagshipReproReport flagship_reproduce(const std::string& artifact_path,
+                                       const std::string& report_path = {});
 
 }  // namespace arbiter

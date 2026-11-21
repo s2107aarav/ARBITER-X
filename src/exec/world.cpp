@@ -151,6 +151,12 @@ RunStats World::run(u64 max_additional_events) {
     return stats_;
 }
 
+u64 World::orders_sent_by(u32 account) const {
+    return std::count_if(inflight_.begin(), inflight_.end(), [account](const Msg& msg) {
+        return !msg.is_cancel && msg.ord.account == account;
+    });
+}
+
 void World::refresh_stats() {
     stats_.hash_every = cfg_.hash_every_events;
     stats_.events_processed = events_;
@@ -704,6 +710,13 @@ void World::feed_handler_md(const WorldEvent& ev) {
         return;
     }
     ++stats_.wire_frames_decoded;
+    const LogicalNs published = decoded.value.ev.t;
+    if (cfg_.stage_tracing && !(decoded.value.flags & kFlagRetransmit) &&
+        published >= 0 && published <= now_) {
+        const double transit = static_cast<double>(now_ - published);
+        stats_.md_transit_mean_ns += (transit - stats_.md_transit_mean_ns) /
+                                     ++stats_.md_transit_samples;
+    }
     pending_md_.emplace(md_seq, decoded.value.ev);
     if (observer_) observer_->receiver(observation(), 1, md_seq, ev.tiebreak,
                                       md_seq > expected_md_seq_ ? ReceiveOutcome::Held : ReceiveOutcome::Accepted);

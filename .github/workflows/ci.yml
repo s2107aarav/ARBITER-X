@@ -75,7 +75,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Script checks
         run: |
-          sh -n scripts/reproduce_all.sh && sh -n examples/flagship.sh
+          sh -n scripts/reproduce_all.sh && sh -n scripts/regenerate_flagship.sh && sh -n examples/flagship.sh
       - name: Complete reproduction workflow
         if: matrix.name == 'apple-clang'
         env:

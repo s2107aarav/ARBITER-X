@@ -81,10 +81,11 @@ Tracing is pure instrumentation: `stage_tracing = false` produces a
 byte-identical state hash and identical economics (test-locked:
 `world_tracing_off_matches_tracing_on`).
 
-Known asymmetry (documented): `md_transit` precedes the decision
-and is therefore not per-fill traceable; flagship cells record the
-CONFIGURED md delay (channels are jitter-free by construction in flagship
-runs, so configured == realized).
+FLAGSHIP measures MD from publication to first accepted non-retransmit
+arrival at the feed handler, before gap buffering. Decision and order transit
+are measured on delivered strategy fill legs with stage traces. The measures
+use separate sample populations. JSON records both counts and uses null for
+unobserved means. The configured allocation defines the fixed total.
 
 ## Fill semantics
 

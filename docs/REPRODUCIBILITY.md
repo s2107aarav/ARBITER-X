@@ -41,12 +41,25 @@ alignment, varying one network variable cannot shift unrelated randomness
 
 ## Provenance and retained evidence
 
-Artifacts record compiler/platform, runtime UTC and build-captured full core
-revision with clean/dirty/unknown source state. These informational fields do
-not enter causal hashes. Exact reproduction requires the same software and
-build context; hashes alone are not a cross-revision compatibility promise.
+The retained JSON and Markdown files are generated together from a fresh
+Release build of a clean committed checkout. The JSON records the producer's
+full Git revision, source state, compiler, platform and UTC generation time.
+Check out the producer revision in a separate worktree and pass a new output
+directory outside that checkout:
 
-All three committed FLAGSHIP records remain inputs to reproduction. Historical
-EXP records and their manifest/result contracts live in ARBITER-X-LAB.
-Compare definitions/configuration, source revision and compiler/platform first
-when a reproduction fails; never hand-edit results to make it pass.
+```sh
+git worktree add --detach /path/to/clean-arbiter <core_revision>
+/path/to/clean-arbiter/scripts/regenerate_flagship.sh /path/to/new-output
+```
+
+The script checks the checkout and build's source state, generates the three
+pilot variants and checks their outputs. Move the generated files into the
+publishing checkout without editing them. The producer revision precedes the
+commit that adds the generated artifacts.
+
+`arbiter flagship --reproduce results.json --report report.md` recomputes and
+compares canonical JSON and Markdown bytes. It carries forward the original
+producer metadata, including the UTC timestamp, as part of that comparison.
+Establish provenance separately by checking the clean producing revision and
+build. For an older artifact schema, use the recorded generating revision.
+Historical EXP records live in ARBITER-X-LAB.

@@ -76,4 +76,19 @@ AX_TEST(walk_forward_handles_full_size_domain) {
     }
 }
 
+AX_TEST(paired_sign_flip_resolution_and_monte_carlo) {
+    const double p8 = stats::paired_sign_flip_pvalue(std::vector<double>(8, 1), 1, 5000);
+    const double p9 = stats::paired_sign_flip_pvalue(std::vector<double>(9, 1), 1, 5000);
+    CHECK_EQ(p8, 2.0 / 256);
+    CHECK_EQ(p9, 2.0 / 512);
+    CHECK_EQ(stats::holm(std::vector<double>(9, p8)).front(), 0.0703125);
+    CHECK_EQ(stats::holm(std::vector<double>(9, p9)).front(), 0.03515625);
+    CHECK_EQ(stats::paired_sign_flip_pvalue({1e-12, 1e-12, 0}, 1, 5000), 0.5);
+    const std::vector<double> large_grid(21, 1);
+    const double mc = stats::paired_sign_flip_pvalue(large_grid, 2026, 5000);
+    CHECK_EQ(mc, 1.0 / 5001);
+    CHECK_EQ(mc, stats::paired_sign_flip_pvalue(large_grid, 2026, 5000));
+    CHECK_EQ(stats::paired_sign_flip_pvalue(std::vector<double>(21, 0), 1, 5000), 1.0);
+}
+
 AX_TEST_MAIN

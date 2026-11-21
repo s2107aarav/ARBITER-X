@@ -765,11 +765,12 @@ FlagshipConfig flagship_config_from_file(const Config& cfg, const std::string& n
 }  // namespace
 
 int cmd_flagship(int argc, char** argv) {
-    if (!valid_options(argc, argv, {"--config", "--reproduce", "--out", "--seed", "--seeds", "--total-ns", "--flow"},
+    if (!valid_options(argc, argv, {"--config", "--reproduce", "--report", "--out", "--seed", "--seeds", "--total-ns", "--flow"},
                        {"--frozen", "--shadow"})) return 2;
     const char* config_file = nullptr;
     const char* reproduce = nullptr;
     const char* out_dir = nullptr;
+    const char* report = nullptr;
     u64 seed0 = 2026, nseeds = 8;
     i64 total_ns = 8000;
     const char* flow = "clustered";
@@ -777,6 +778,7 @@ int cmd_flagship(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--config") && i + 1 < argc) config_file = argv[++i];
         else if (!std::strcmp(argv[i], "--reproduce") && i + 1 < argc) reproduce = argv[++i];
+        else if (!std::strcmp(argv[i], "--report")) report = argv[++i];
         else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) out_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--seed")) {
             if (!parse_u64_option(argc, argv, i, seed0)) return 2;
@@ -788,10 +790,14 @@ int cmd_flagship(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--flow") && i + 1 < argc) flow = argv[++i];
         else if (!std::strcmp(argv[i], "--frozen") || !std::strcmp(argv[i], "--shadow")) shadow = true;
     }
+    if (report && !reproduce) {
+        std::fputs("--report requires --reproduce\n", stderr);
+        return 2;
+    }
     if (config_file || reproduce) {
         for (int i = 1; i < argc; ++i) {
             const std::string_view option = argv[i];
-            if (option == "--reproduce" || (!reproduce && (option == "--config" || option == "--out"))) {
+            if (option == "--reproduce" || (reproduce && option == "--report") || (!reproduce && (option == "--config" || option == "--out"))) {
                 ++i;
                 continue;
             }
@@ -801,7 +807,7 @@ int cmd_flagship(int argc, char** argv) {
         }
     }
     if (reproduce) {
-        const FlagshipReproReport rep = flagship_reproduce(reproduce);
+        const FlagshipReproReport rep = flagship_reproduce(reproduce, report ? report : "");
         std::printf("flagship reproduce %s\n  cells: %llu  seeds: %llu  mismatches: %llu\n",
                     reproduce, (unsigned long long)rep.cells_checked,
                     (unsigned long long)rep.seeds_checked, (unsigned long long)rep.mismatches);
@@ -967,7 +973,7 @@ void print_usage() {
       "  worldcheck [--seed S --events N --out FILE]\n"
       "  worldjump --snap FILE [--events N]\n"
       "  worldfork --snap FILE --variable key=value [--events N]\n"
-      "  flagship [--config FILE --out DIR] [--reproduce RESULTS.json]\n"
+      "  flagship [--config FILE --out DIR] [--reproduce RESULTS.json [--report REPORT.md]]\n"
       "  simstats [--seed S --ms MS --self-excitation K]\n"
       "  fuzz --target differential|protocol|adversarial|corpus [--iters N]\n"
       "Historical research and general grids: arbiter-lab (optional LAB).\n"

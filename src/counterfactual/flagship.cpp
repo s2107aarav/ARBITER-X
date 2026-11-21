@@ -3,7 +3,6 @@
 #include "arbiter/errors.hpp"
 #include "arbiter/hash.hpp"
 #include "arbiter/build_info.hpp"
-#include "arbiter/rng.hpp"
 #include "arbiter/stats.hpp"
 #include "../core/json.hpp"
 
@@ -46,6 +45,8 @@ CellSeedOutcome run_one(const FlagshipConfig& fc, const LatencyAllocation& alloc
     WorldConfig cfg = alloc.apply_to(base_world_config(fc));
     World w(cfg, seed);
     const RunStats& s = w.run();
+    if (s.events_processed == cfg.max_events)
+        throw std::runtime_error("flagship hit the world event cap before verifying horizon completion");
     CellSeedOutcome o;
     o.mm_marked_pnl = saturating_add_i64(s.mm_cash, saturating_mul_i64(s.mm_inventory, s.final_mid));
     o.mom_marked_pnl = saturating_add_i64(s.mom_cash, saturating_mul_i64(s.mom_inventory, s.final_mid));
@@ -54,23 +55,21 @@ CellSeedOutcome run_one(const FlagshipConfig& fc, const LatencyAllocation& alloc
     o.mm_filled_qty = s.mm_real_filled_qty;
     o.mom_fills = s.momentum_fills;
     o.mom_filled_qty = s.mom_filled_qty;  // delivered lots at the study horizon
-    o.mm_orders_sent = s.strategy_orders_sent;
+    o.mm_orders_sent = w.orders_sent_by(cfg.mm.account);
     o.mm_cancels_sent = s.strategy_cancels_sent;
-    o.mm_orders_rejected = s.risk_rejected;
+    o.mm_orders_rejected = w.risk_rejected_by(cfg.mm.account);
     o.final_state_hash = w.state_hash();
     o.events = s.events_processed;
-    // markouts: mean of the archetype-separated histograms (0 when empty)
-    if (s.adverse_100us.count()) o.mm_markout_100us = s.adverse_100us.mean();
-    if (s.mom_adverse_100us.count()) o.mom_markout_100us = s.mom_adverse_100us.mean();
-    // realized stage means, engine-measured verification of the allocation
-    const u64 n = s.stage_traced_fills;
-    if (n > 0) {
-        o.mean_decision_ns = static_cast<double>(s.stage_sum_decision_to_depart) / n;
-        o.mean_order_transit_ns = static_cast<double>(s.stage_sum_depart_to_gateway) / n;
-        // md transit is not per-fill traceable (it precedes the decision):
-        // realized = configured base delay for the clean channel; the
-        // report marks this distinction explicitly.
-        o.mean_md_transit_ns = static_cast<double>(alloc.md_transit_ns);
+    o.mm_markout_samples = s.adverse_100us.count();
+    o.mom_markout_samples = s.mom_adverse_100us.count();
+    o.mm_markout_100us = s.adverse_100us.mean();
+    o.mom_markout_100us = s.mom_adverse_100us.mean();
+    o.md_transit_samples = s.md_transit_samples;
+    o.mean_md_transit_ns = s.md_transit_mean_ns;
+    o.action_trace_samples = s.stage_traced_fills;
+    if (o.action_trace_samples) {
+        o.mean_decision_ns = static_cast<double>(s.stage_sum_decision_to_depart) / o.action_trace_samples;
+        o.mean_order_transit_ns = static_cast<double>(s.stage_sum_depart_to_gateway) / o.action_trace_samples;
     }
     return o;
 }
@@ -83,35 +82,11 @@ std::string cell_name(double md_share) {
     return buf;
 }
 
-// Two-sided sign-permutation p-value for the mean of paired differences:
-// under H0 (exchangeable signs), all 2^n sign flips of the difference
-// vector are equally likely. Exact enumeration for n <= 20; seeded random
-// flips for larger n (reproducible).
-double permutation_pvalue(const std::vector<double>& d, u64 seed, size_t reps) {
-    const size_t n = d.size();
-    if (n == 0) return 1.0;
-    double obs = 0.0;
-    for (double v : d) obs += v;
-    // enumerate all sign flips (n <= 20: <= 1M flips)
-    if (n <= 20) {
-        const size_t flips = 1u << n;
-        size_t ge = 0;
-        for (size_t f = 0; f < flips; ++f) {
-            double s = 0.0;
-            for (size_t i = 0; i < n; ++i) s += (f >> i) & 1u ? -d[i] : d[i];
-            if (std::fabs(s) >= std::fabs(obs) - 1e-9) ++ge;
-        }
-        return static_cast<double>(ge) / static_cast<double>(flips);
-    }
-    // seeded random flips
-    Rng rng(Rng::stream(seed, 0x5045524Dull).state);
-    size_t ge = 0;
-    for (size_t r = 0; r < reps; ++r) {
-        double s = 0.0;
-        for (size_t i = 0; i < n; ++i) s += rng.chance(0.5) ? -d[i] : d[i];
-        if (std::fabs(s) >= std::fabs(obs) - 1e-9) ++ge;
-    }
-    return (static_cast<double>(ge) + 1.0) / (static_cast<double>(reps) + 1.0);
+std::string number_or_null(double value, u64 samples, const char* format = "%.17g") {
+    if (samples == 0) return "null";
+    char number[64];
+    std::snprintf(number, sizeof number, format, value);
+    return number;
 }
 
 u64 definition_hash(const FlagshipConfig& fc) {
@@ -137,6 +112,9 @@ u64 definition_hash(const FlagshipConfig& fc) {
 }  // namespace
 
 const char* PairComparison::verdict() const noexcept {
+    if (!per_lot_available)
+        return statistically_significant ? "H0 rejected after Holm correction. Per-lot effect unavailable."
+                                         : "The primary contrast is inconclusive after Holm correction. Per-lot effect unavailable.";
     if (statistically_significant)
         return economically_material ? "H0 rejected after Holm correction. The effect meets the materiality threshold."
                                      : "H0 rejected after Holm correction. The effect falls below the materiality threshold.";
@@ -198,16 +176,22 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
             mm_f += o.mm_fills;
             mm_q += o.mm_filled_qty;
             mom_q += o.mom_filled_qty;
-            mm_m += o.mm_markout_100us;
-            mom_m += o.mom_markout_100us;
+            if (o.mm_markout_samples) {
+                mm_m += o.mm_markout_100us;
+                ++cell.mm_markout_seeds;
+            }
+            if (o.mom_markout_samples) {
+                mom_m += o.mom_markout_100us;
+                ++cell.mom_markout_seeds;
+            }
         }
         cell.mean_mm_pnl = mm_pnl / n;
         cell.mean_mom_pnl = mom_pnl / n;
         cell.mean_mm_fills = mm_f / n;
         cell.mean_mm_filled_qty = mm_q / n;
         cell.mean_mom_filled_qty = mom_q / n;
-        cell.mean_mm_markout = mm_m / n;
-        cell.mean_mom_markout = mom_m / n;
+        if (cell.mm_markout_seeds) cell.mean_mm_markout = mm_m / cell.mm_markout_seeds;
+        if (cell.mom_markout_seeds) cell.mean_mom_markout = mom_m / cell.mom_markout_seeds;
         res.cells.push_back(std::move(cell));
     }
 
@@ -230,20 +214,22 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
             p.mm_pnl_diff.push_back(static_cast<double>(static_cast<long double>(b.mm_marked_pnl) - a.mm_marked_pnl));
             p.mom_pnl_diff.push_back(static_cast<double>(static_cast<long double>(b.mom_marked_pnl) - a.mom_marked_pnl));
             p.mm_fills_diff.push_back(signed_fill_count_difference(b.mm_fills, a.mm_fills));
-            p.mm_markout_diff.push_back(b.mm_markout_100us - a.mm_markout_100us);
+            if (a.mm_markout_samples && b.mm_markout_samples)
+                p.mm_markout_diff.push_back(b.mm_markout_100us - a.mm_markout_100us);
         }
         const stats::MeanCI ci = stats::mean_ci(p.mm_pnl_diff, fc.hac_lag);
         p.mean_diff = ci.mean;
         p.se_iid = ci.se_iid;
         p.ci95_lo = ci.ci95_lo;
         p.ci95_hi = ci.ci95_hi;
-        p.p_permutation = permutation_pvalue(p.mm_pnl_diff, res.definition_hash,
+        p.p_permutation = stats::paired_sign_flip_pvalue(p.mm_pnl_diff, res.definition_hash,
                                              fc.permutation_reps);
         // economic scale: per-lot PnL difference (ticks*qty per filled lot,
         // using the two cells' average traded volume as the denominator)
         const double dq = res.cells[ib].mean_mm_filled_qty + res.cells[ia].mean_mm_filled_qty;
-        p.pnl_diff_per_lot = dq > 0 ? (p.mean_diff / (dq / 2.0)) : 0.0;
-        p.economically_material = dq > 0 &&
+        p.per_lot_available = dq > 0;
+        p.pnl_diff_per_lot = p.per_lot_available ? (p.mean_diff / (dq / 2.0)) : 0.0;
+        p.economically_material = p.per_lot_available &&
             std::fabs(p.pnl_diff_per_lot) >= fc.economic_threshold_ticks_qty_per_lot;
         res.pairs.push_back(std::move(p));
     };
@@ -256,9 +242,9 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
     const std::vector<double> adjusted_p = stats::holm(raw_p);
     for (size_t i = 0; i < res.pairs.size(); ++i) {
         res.pairs[i].p_holm = adjusted_p[i];
-        res.pairs[i].statistically_significant = adjusted_p[i] < 0.05;
+        res.pairs[i].statistically_significant = adjusted_p[i] <= 0.05;
     }
-    // findings: falsification-first reading of the grid. NO hardcoded
+    // findings: reading of the grid. NO hardcoded
     // narrative, each statement is computed from the data.
     {
         char b[256];
@@ -266,14 +252,15 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         const PairComparison& prim = res.pairs.back();
         std::snprintf(b, sizeof b,
                       "primary contrast (%s -> %s): mean paired MM PnL diff %+.1f ticks*qty "
-                      "(per-lot %+.2f), Holm p=%.4f, %s",
+                      "(per-lot %s), Holm p=%.4f, %s",
                       prim.cell_a.c_str(), prim.cell_b.c_str(), prim.mean_diff,
-                      prim.pnl_diff_per_lot, prim.p_holm,
+                      number_or_null(prim.pnl_diff_per_lot, prim.per_lot_available, "%+.2f").c_str(), prim.p_holm,
                       prim.statistically_significant ? "significant" : "not significant");
         res.findings.push_back(b);
         std::snprintf(b, sizeof b,
                       "economic materiality (primary): %s (threshold %.2f ticks*qty/lot)",
-                      prim.economically_material ? "MATERIAL" : "not material",
+                      prim.per_lot_available ? (prim.economically_material ? "MATERIAL" : "not material")
+                                             : "unavailable",
                       fc.economic_threshold_ticks_qty_per_lot);
         res.findings.push_back(b);
         // fill-count movement across the slice (execution mechanics channel)
@@ -282,16 +269,15 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         std::snprintf(b, sizeof b,
                       "MM filled lots across the slice: %.1f (md share %.3g) vs %.1f "
                       "(md share %.3g): %s", f_hi, fc.md_shares.back(), f_lo, fc.md_shares.front(),
-                      std::fabs(f_hi - f_lo) > 1e-9 ? "placement changes fill mechanics"
-                                                    : "fill mechanics invariant to placement");
+                      std::fabs(f_hi - f_lo) > 1e-9 ? "sample means differ"
+                                                    : "sample means match");
         res.findings.push_back(b);
         // taker-side economics movement
         const double m_lo = res.cells.front().mean_mom_pnl;
         const double m_hi = res.cells.back().mean_mom_pnl;
         std::snprintf(b, sizeof b,
-                      "taker (momentum) PnL across the slice: %.1f -> %.1f (%s)",
-                      m_lo, m_hi,
-                      std::fabs(m_hi - m_lo) > 1e-9 ? "moves" : "invariant");
+                      "taker (momentum) mean PnL across the slice: %.1f -> %.1f",
+                      m_lo, m_hi);
         res.findings.push_back(b);
         // taker-side inference at the primary contrast (endpoint reported for
         // archetype heterogeneity; NOT part of the Holm family, the MM PnL
@@ -300,14 +286,12 @@ FlagshipResult run_flagship(const FlagshipConfig& fc) {
         {
             const PairComparison& prim2 = res.pairs.back();
             const stats::MeanCI mci = stats::mean_ci(prim2.mom_pnl_diff, fc.hac_lag);
-            const double p_taker = permutation_pvalue(prim2.mom_pnl_diff,
+            const double p_taker = stats::paired_sign_flip_pvalue(prim2.mom_pnl_diff,
                                                        res.definition_hash,
                                                        fc.permutation_reps);
             std::snprintf(b, sizeof b,
-                          "taker primary-contrast paired PnL diff: %+.1f (se %.1f, "
-                          "perm p=%.4f) — %s",
-                          mci.mean, mci.se_iid, p_taker,
-                          p_taker < 0.05 ? "significant" : "not significant");
+                          "exploratory taker endpoint: mean paired PnL diff %+.1f (raw sign-flip p=%.4f)",
+                          mci.mean, p_taker);
             res.findings.push_back(b);
         }
         // verdict against H0 for the primary contrast
@@ -416,7 +400,7 @@ bool write_file(const std::string& path, const std::string& content) {
 
 std::string flagship_to_json(const FlagshipResult& r) {
     char buf[1024];
-    std::string out = "{\n";
+    std::string out = "{\n  \"schema_version\": 2,\n";
     out += "  \"experiment\": " + json_quote(r.cfg.name) + ",\n";
     std::snprintf(buf, sizeof buf, "  \"definition_hash\": %llu,\n  \"total_latency_ns\": %lld,\n",
                   (unsigned long long)r.definition_hash, (long long)r.cfg.total_latency_ns);
@@ -455,27 +439,39 @@ std::string flagship_to_json(const FlagshipResult& r) {
                       "    {\"name\": \"%s\", \"alloc\": \"%s\", \"md_share\": %.17g,\n"
                       "     \"mean_mm_pnl\": %.17g, \"mean_mom_pnl\": %.17g,\n"
                       "     \"mean_mm_filled_qty\": %.17g, \"mean_mom_filled_qty\": %.17g,\n"
-                      "     \"mean_mm_markout\": %.17g, \"mean_mom_markout\": %.17g,\n"
+                      "     \"mean_mm_markout\": %s, \"mean_mom_markout\": %s,\n"
+                      "     \"mm_markout_seeds\": %llu, \"mom_markout_seeds\": %llu,\n"
                       "     \"seeds\": [\n",
                       cell.name.c_str(), cell.alloc.to_string().c_str(),
                       r.cfg.md_shares[c], cell.mean_mm_pnl, cell.mean_mom_pnl,
                       cell.mean_mm_filled_qty, cell.mean_mom_filled_qty,
-                      cell.mean_mm_markout, cell.mean_mom_markout);
+                      number_or_null(cell.mean_mm_markout, cell.mm_markout_seeds).c_str(),
+                      number_or_null(cell.mean_mom_markout, cell.mom_markout_seeds).c_str(),
+                      (unsigned long long)cell.mm_markout_seeds, (unsigned long long)cell.mom_markout_seeds);
         out += buf;
         for (size_t k = 0; k < cell.per_seed.size(); ++k) {
             const CellSeedOutcome& o = cell.per_seed[k];
             std::snprintf(buf, sizeof buf,
                           "       {\"seed\": %llu, \"mm_pnl\": %lld, \"mom_pnl\": %lld,\n"
-                          "        \"mm_fills\": %llu, \"mm_filled_qty\": %llu, \"mom_fills\": %llu,\n"
-                          "        \"mm_markout\": %.17g, \"mom_markout\": %.17g,\n"
+                          "        \"mm_fills\": %llu, \"mm_filled_qty\": %llu, \"mom_fills\": %llu, \"mom_filled_qty\": %llu,\n"
+                          "        \"mm_markout\": %s, \"mom_markout\": %s,\n"
+                          "        \"mm_markout_samples\": %llu, \"mom_markout_samples\": %llu,\n"
                           "        \"mm_drawdown\": %lld, \"final_hash\": %llu,\n"
-                          "        \"realized_decision_ns\": %.17g, \"realized_order_ns\": %.17g}%s\n",
+                          "        \"md_transit_samples\": %llu, \"action_trace_samples\": %llu,\n"
+                          "        \"measured_md_transit_ns\": %s, \"measured_decision_ns\": %s, "
+                          "\"measured_order_ns\": %s}%s\n",
                           (unsigned long long)r.cfg.seeds[k], (long long)o.mm_marked_pnl,
                           (long long)o.mom_marked_pnl, (unsigned long long)o.mm_fills,
                           (unsigned long long)o.mm_filled_qty, (unsigned long long)o.mom_fills,
-                          o.mm_markout_100us, o.mom_markout_100us, (long long)o.mm_max_drawdown,
-                          (unsigned long long)o.final_state_hash,
-                          o.mean_decision_ns, o.mean_order_transit_ns,
+                          (unsigned long long)o.mom_filled_qty,
+                          number_or_null(o.mm_markout_100us, o.mm_markout_samples).c_str(),
+                          number_or_null(o.mom_markout_100us, o.mom_markout_samples).c_str(),
+                          (unsigned long long)o.mm_markout_samples, (unsigned long long)o.mom_markout_samples,
+                          (long long)o.mm_max_drawdown, (unsigned long long)o.final_state_hash,
+                          (unsigned long long)o.md_transit_samples, (unsigned long long)o.action_trace_samples,
+                          number_or_null(o.mean_md_transit_ns, o.md_transit_samples).c_str(),
+                          number_or_null(o.mean_decision_ns, o.action_trace_samples).c_str(),
+                          number_or_null(o.mean_order_transit_ns, o.action_trace_samples).c_str(),
                           k + 1 < cell.per_seed.size() ? "," : "");
             out += buf;
         }
@@ -485,16 +481,20 @@ std::string flagship_to_json(const FlagshipResult& r) {
     out += "  ],\n  \"pairs\": [\n";
     for (size_t i = 0; i < r.pairs.size(); ++i) {
         const PairComparison& p = r.pairs[i];
+        char interval[64] = "null";
+        if (r.cfg.seeds.size() > 1)
+            std::snprintf(interval, sizeof interval, "[%.17g, %.17g]", p.ci95_lo, p.ci95_hi);
         std::snprintf(buf, sizeof buf,
                       "    {\"a\": \"%s\", \"b\": \"%s\",\n"
-                      "     \"mean_mm_pnl_diff\": %.17g, \"ci95\": [%.17g, %.17g],\n"
+                      "     \"mean_mm_pnl_diff\": %.17g, \"ci95\": %s,\n"
                       "     \"p_perm\": %.17g, \"p_holm\": %.17g,\n"
-                      "     \"pnl_diff_per_lot\": %.17g,\n"
+                      "     \"pnl_diff_per_lot\": %s,\n"
                       "     \"significant\": %s, \"material\": %s}%s\n",
-                      p.cell_a.c_str(), p.cell_b.c_str(), p.mean_diff, p.ci95_lo, p.ci95_hi,
-                      p.p_permutation, p.p_holm, p.pnl_diff_per_lot,
+                      p.cell_a.c_str(), p.cell_b.c_str(), p.mean_diff, interval,
+                      p.p_permutation, p.p_holm,
+                      number_or_null(p.pnl_diff_per_lot, p.per_lot_available).c_str(),
                       p.statistically_significant ? "true" : "false",
-                      p.economically_material ? "true" : "false",
+                      p.per_lot_available ? (p.economically_material ? "true" : "false") : "null",
                       i + 1 < r.pairs.size() ? "," : "");
         out += buf;
     }
@@ -512,41 +512,48 @@ std::string flagship_report_md(const FlagshipResult& r) {
     char buf[512];
     std::string out;
     out += "# Flagship: latency-stage non-fungibility (fixed total budget)\n\n";
-    out += "**This is a paired counterfactual estimate under the simulator's "
-           "structural assumptions — not a causal claim about real markets.**\n\n";
-    out += "## Research question\n\nFor a FIXED total trader-side latency budget L = "
-           + std::to_string(r.cfg.total_latency_ns) + " ns, does the ALLOCATION of L across "
-           "(observation md_transit, decision, order_transit) change execution economics?\n\n";
-    out += "H0: only the total matters (E[Y|allocation] = f(L)). H1: placement matters "
-           "(stage marginal effects differ).\n\n";
-    out += "## Intervention\n\nONE-DIMENSIONAL SLICE of the 3-stage allocation simplex: "
-           "the md-share axis {0..1} with the action stages (decision, order_transit) "
-           "split evenly — NOT the full simplex (interior decision/order trade-offs are "
-           "not explored). Identical total in every cell, enforced by the typed "
-           "`LatencyAllocation` invariant; engine-measured realized stage latencies "
-           "recorded per cell.\n\n";
+    out += "This paired simulation study estimates effects within the model.\n\n";
+    out += "Source revision `" + r.core_revision + "` (" + r.core_source_state +
+           "), built with " + r.compiler + " on " + r.platform + ".\n\n";
+    out += "## Research question\n\nDoes shifting a fixed " +
+           std::to_string(r.cfg.total_latency_ns) + " ns budget across observation, decision and "
+           "order transit change mean market-maker marked PnL?\n\n";
+    out += "## Intervention\n\nThe allocation grid varies the observation share and divides the "
+           "remainder between decision and order transit. Every configured allocation sums to the fixed "
+           "budget. JSON reports measured publication-to-feed-arrival means for accepted MD packets "
+           "excluding retransmissions. Decision-to-departure and departure-to-gateway means use "
+           "delivered strategy fill legs with stage traces. Sample counts identify the two populations, "
+           "and absent measurements are null. These separate means do not trace a single path.\n\n";
     out += "## Market process\n\nflow_model=" + r.flow_model_name;
     if (r.flow_model_name == "clustered") {
-        std::snprintf(buf, sizeof buf, " (post-trade intensity boost + trade-sign "
-                     "persistence, k=%.2f; a minimal self-exciting mechanism with a "
-                     "bit-exact Poisson null — NOT a Hawkes process)",
-                     r.cfg.taker_self_excitation);
+        std::snprintf(buf, sizeof buf, " (post-trade intensity boost and trade-sign persistence, k=%.2f)",
+                      r.cfg.taker_self_excitation);
         out += buf;
     } else {
-        out += " (k=0: the memoryless null process, bit-identical to the "
-               "historical simulator behavior)";
+        out += " (memoryless taker process within each regime, k=0)";
     }
-    out += "\n\n**Regime-contrast scope (limitation):** the two flow regimes "
-           "differ in the taker process's dependence structure AND consequently in "
-           "realized intensity and trade-sign runs. The clustered process can "
-           "produce sign signals that activate the momentum strategy. The placebo "
-           "therefore shows \"allocation has no "
-           "effect under THIS null market\"; it does NOT isolate which aspect of the "
-           "clustered process (dependence vs intensity) would drive any clustered-"
-           "regime effect.\n\n";
-    out += "## Replication\n\nSeed is the unit of replication (independent worlds; "
-           "within-world events are never treated as independent). Cells are PAIRED by "
-           "seed (common random numbers): same master seed, same named streams.\n\n";
+    out += "\n\nThe regime comparison jointly changes temporal dependence, realized intensity and "
+           "trade-sign persistence. The Poisson control alone cannot identify the mechanism.\n\n";
+    out += "## Replication and inference\n\nThe " + std::to_string(r.cfg.seeds.size()) +
+           " master seeds are the independent replication units. All cells use the same seeds and "
+           "named streams for paired comparisons. The two-sided sign-flip test assumes the paired "
+           "differences are invariant to independent sign changes under the null. Holm correction "
+           "covers the " + std::to_string(r.pairs.size()) +
+           " market-maker contrasts in this grid at family-wise alpha 0.05. The endpoints "
+           "form the primary contrast. Intervals are descriptive, unadjusted normal approximations "
+           "across seeds. The taker endpoint is exploratory.\n\n";
+    if (r.cfg.seeds.size() <= stats::kExactSignFlipMaxPairs) {
+        const auto assignments = u64{1} << r.cfg.seeds.size();
+        const double floor = std::min(1.0, 2.0 * r.pairs.size() / assignments);
+        std::snprintf(buf, sizeof buf, "The exact test uses %llu sign assignments. The smallest "
+                      "possible Holm-adjusted p-value is %.10g, before any additional ties.%s\n\n",
+                      (unsigned long long)assignments, floor,
+                      floor > 0.05 ? " This pilot cannot reject at family-wise alpha 0.05." : "");
+        out += buf;
+    } else {
+        out += "The sign-flip test uses " + std::to_string(r.cfg.permutation_reps) +
+               " seeded Monte Carlo draws and counts the observed assignment once.\n\n";
+    }
     out += "## Interference mode\n\n";
     out += r.cfg.bots_observe_shadow
                ? "frozen observation (bots see a shadow touch excluding strategy orders; "
@@ -556,14 +563,18 @@ std::string flagship_report_md(const FlagshipResult& r) {
                  "probed by re-running frozen)\n\n";
 
     // grid table
-    out += "| cell | allocation | MM PnL (ticks*qty) | MM filled lots | MM markout | "
+    out += "PnL is marked from strategy-local cash and inventory at the horizon. Filled lots "
+           "count delivered fill legs. Markouts average seed means with observed probes.\n\n";
+    out += "| cell | configured allocation (ns) | MM PnL (ticks*qty) | MM filled lots | MM markout | "
            "Taker PnL | Taker filled lots |\n";
     out += "|---|---|---|---|---|---|---|\n";
     for (size_t c = 0; c < r.cells.size(); ++c) {
         const CellResult& cell = r.cells[c];
-        std::snprintf(buf, sizeof buf, "| %s | %s | %.1f | %.1f | %+.2f | %.1f | %.1f |\n",
+        std::snprintf(buf, sizeof buf, "| %s | %s | %.1f | %.1f | %s | %.1f | %.1f |\n",
                       cell.name.c_str(), cell.alloc.to_string().c_str(), cell.mean_mm_pnl,
-                      cell.mean_mm_filled_qty, cell.mean_mm_markout, cell.mean_mom_pnl,
+                      cell.mean_mm_filled_qty,
+                      number_or_null(cell.mean_mm_markout, cell.mm_markout_seeds, "%+.2f").c_str(),
+                      cell.mean_mom_pnl,
                       cell.mean_mom_filled_qty);
         out += buf;
     }
@@ -571,33 +582,28 @@ std::string flagship_report_md(const FlagshipResult& r) {
     out += "| contrast | mean diff | 95% CI (iid) | p (perm) | p (Holm) | per-lot | "
            "significant | material |\n|---|---|---|---|---|---|---|---|\n";
     for (const PairComparison& p : r.pairs) {
+        char interval[64] = "n/a";
+        if (r.cfg.seeds.size() > 1)
+            std::snprintf(interval, sizeof interval, "[%+.1f, %+.1f]", p.ci95_lo, p.ci95_hi);
         std::snprintf(buf, sizeof buf,
-                      "| %s → %s | %+.1f | [%+.1f, %+.1f] | %.4f | %.4f | %+.2f | %s | %s |\n",
-                      p.cell_a.c_str(), p.cell_b.c_str(), p.mean_diff, p.ci95_lo, p.ci95_hi,
-                      p.p_permutation, p.p_holm, p.pnl_diff_per_lot,
+                      "| %s → %s | %+.1f | %s | %.4f | %.4f | %s | %s | %s |\n",
+                      p.cell_a.c_str(), p.cell_b.c_str(), p.mean_diff, interval,
+                      p.p_permutation, p.p_holm,
+                      number_or_null(p.pnl_diff_per_lot, p.per_lot_available, "%+.2f").c_str(),
                       p.statistically_significant ? "yes" : "no",
-                      p.economically_material ? "yes" : "no");
+                      p.per_lot_available ? (p.economically_material ? "yes" : "no") : "n/a");
         out += buf;
     }
     out += "\n";
     for (const std::string& f : r.findings) out += "- " + f + "\n";
     if (!r.findings.empty()) out += "\n";
-    out += "## Falsification status\n\n";
-    out += "- Poisson null: run the same grid with `flow_model=poisson`. Interpretation "
-           "scope: if an allocation effect existed in the null market it would indicate "
-           "placement sensitivity WITHOUT clustered flow (mechanism contradiction); a "
-           "null result here is necessary but NOT sufficient for the clustered-flow "
-           "mechanism (the regimes also differ in intensity — see the regime-contrast "
-           "scope above).\n";
-    out += "- Interference: re-run with `bots_observe_shadow=true`; a large gap between "
-           "reactive and frozen effects means the interpretation is unstable.\n";
-    out += "- Kill conditions: no adjacent-pair materiality under clustered flow at the "
-           "primary contrast; or materiality driven by one seed; or reference/optimized "
-           "book disagreement (checked separately in the differential suite).\n\n";
-    out += "## Reproducibility\n\n`arbiter flagship --config <file>` re-runs this design; "
-           "`arbiter flagship --reproduce <artifact.json>` verifies every recorded hash "
-           "bit-for-bit. definition_hash covers the full design (grid, seeds, regime, "
-           "horizon, thresholds).\n";
+    out += "## Interpretation\n\nCompare the Poisson and frozen-observation controls as "
+           "sensitivity checks. Compare the per-lot point estimate with the planned economic "
+           "threshold and its paired PnL result with the adjusted test. A non-rejection does "
+           "not establish equivalence.\n\n";
+    out += "## Reproducibility\n\n`arbiter flagship --reproduce results.json --report report.md` "
+           "recomputes the outputs and compares their bytes. The recorded provenance is carried "
+           "into the comparison. Verify it against the original clean build separately.\n";
     return out;
 }
 
@@ -614,12 +620,18 @@ Status write_flagship_artifacts(const std::string& dir, const FlagshipResult& r)
     return good();
 }
 
-FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
+FlagshipReproReport flagship_reproduce(const std::string& artifact_path,
+                                       const std::string& report_path) {
     FlagshipReproReport rep;
     rep.detail = "ok";
     std::string text;
     if (!read_file(artifact_path, text)) {
         rep.detail = "cannot read artifact: " + artifact_path;
+        return rep;
+    }
+    u64 schema = 0;
+    if (!scan_int(text, "schema_version", schema) || schema != 2) {
+        rep.detail = "unsupported artifact schema; use the recorded generating revision";
         return rep;
     }
     std::string name, flow;
@@ -790,7 +802,7 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
     }
     FlagshipResult res;
     try { res = run_flagship(fc); }
-    catch (const std::invalid_argument& error) { rep.detail = error.what(); return rep; }
+    catch (const std::exception& error) { rep.detail = error.what(); return rep; }
     rep.cells_checked = cells.size();
     rep.seeds_checked = seeds.size();
     for (size_t c = 0; c < cells.size(); ++c) {
@@ -816,18 +828,20 @@ FlagshipReproReport flagship_reproduce(const std::string& artifact_path) {
                 break;
             }
         }
-        const std::string expected = flagship_to_json(res);
-        auto payload = [](std::string_view value) {
-            while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
-                value.remove_suffix(1);
-            return value;
-        };
-        if (rep.ok && payload(text) != payload(expected)) {
+        if (rep.ok && text != flagship_to_json(res)) {
             rep.ok = false;
             ++rep.mismatches;
         }
     }
-    if (!rep.ok)
+    if (rep.ok && !report_path.empty()) {
+        std::string report;
+        if (!read_file(report_path, report) || report != flagship_report_md(res)) {
+            rep.ok = false;
+            ++rep.mismatches;
+            rep.detail = "report bytes differ or report is unreadable";
+        }
+    }
+    if (!rep.ok && rep.detail == "ok")
         rep.detail = "mismatches: " + std::to_string(rep.mismatches);
     return rep;
 }

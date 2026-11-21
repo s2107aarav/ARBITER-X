@@ -60,6 +60,10 @@ struct RunStats {
     u64 md_recovered = 0;   // gap-recovery retransmit packets scheduled
     u64 md_snapshot_recoveries = 0;
 
+    // Publication to accepted non-retransmit MD arrival, before gap buffering.
+    u64 md_transit_samples = 0;
+    double md_transit_mean_ns = 0.0;
+
     // wire protocol (live path: order/exec frames encoded + decoded)
     u64 wire_frames_encoded = 0;
     u64 wire_frames_decoded = 0;

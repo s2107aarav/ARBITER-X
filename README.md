@@ -69,17 +69,16 @@ identify the exact causal event. State hashes are noncryptographic fingerprints.
 ```sh
 ./build/arbiter flagship --config configs/flagship_clustered.axexp --out artifacts/allocation
 ./build/arbiter flagship --reproduce artifacts/allocation/results.json
-./build/arbiter flagship --reproduce experiments/FLAGSHIP-clustered-reactive/results.json
+./build/arbiter flagship --reproduce experiments/FLAGSHIP-clustered-reactive/results.json \
+  --report experiments/FLAGSHIP-clustered-reactive/report.md
 ```
 
-The retained study varies placement of an 8us budget across observation,
-decision and order transit, with nine allocations and eight paired seeds.
-Poisson and shadow-observation controls remain under experiments/FLAGSHIP-*.
-The clustered/reactive primary contrast is −1.35 ticks/lot with a Holm-adjusted
-p-value of 1.0. The absolute point estimate exceeds the 1 tick/lot materiality threshold. Eight seeds use
-256 exact sign assignments. The 5,000-repetition parameter applies to the larger
-Monte Carlo path. Reported intervals are IID seed-level intervals; HAC utilities
-are available but their intervals are not serialized by this study.
+The retained eight-seed pilot varies placement of an 8 µs budget across
+observation, decision and order transit. Its nine-comparison Holm correction
+makes 0.0703125 the lowest attainable adjusted p-value. The clustered/reactive
+primary estimate was −1.35 ticks per filled lot (Holm p=1.0). The pilot leaves
+latency-stage non-fungibility unresolved. The artifacts distinguish the
+configured budget from measured latency samples.
 
 See docs/EXPERIMENTS/flagship_allocation.md and examples/flagship.sh.
 Shadow mode changes observations; real matching interference remains.

@@ -60,9 +60,9 @@ Controls:
   (ticks*qty per filled lot). Holm is the correction applied in the flagship;
   Bonferroni and BH-FDR are implemented and unit-tested, available for future
   multi-family studies.
-* **engine-verified intervention**: per-cell realized stage latencies are
-  recorded from the engine's own stage trace (placement provably took
-  hold; test `stage_placement_is_realized_in_engine_timestamps`).
+* **Intervention checks**: configured delays sum to the budget. JSON reports
+  measured MD arrival and action-stage means with their respective sample
+  counts. These populations measure different paths (see docs/EXECUTION_MODEL.md).
 
 Artifacts (`experiments/FLAGSHIP-*/results.json`) record the complete
 design: definition hash, seeds, regime, interference mode, allocations,

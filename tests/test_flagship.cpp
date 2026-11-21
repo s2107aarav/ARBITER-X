@@ -135,7 +135,19 @@ AX_TEST(flagship_names_roundtrip_json_escapes) {
     CHECK_EQ(result.pairs.size(), 1u);
     const std::string dir = "artifacts/escaped_flagship";
     CHECK(write_flagship_artifacts(dir, result));
-    CHECK(flagship_reproduce(dir + "/results.json").ok);
+    CHECK(flagship_reproduce(dir + "/results.json", dir + "/report.md").ok);
+    const auto json = flagship_to_json(result);
+    CHECK(json.find("\"measured_md_transit_ns\": null") != json.npos);
+    CHECK(json.find("\"measured_decision_ns\": null") != json.npos);
+    CHECK(json.find("\"measured_order_ns\": null") != json.npos);
+    CHECK(json.find("\"mean_mm_markout\": null") != json.npos);
+    CHECK(json.find("\"ci95\": null") != json.npos);
+    CHECK(json.find("\"pnl_diff_per_lot\": null") != json.npos);
+    FILE* changed_report = std::fopen((dir + "/report.md").c_str(), "ab");
+    CHECK(changed_report); if (!changed_report) return;
+    CHECK(std::fputc(' ', changed_report) != EOF);
+    CHECK_EQ(std::fclose(changed_report), 0);
+    CHECK(!flagship_reproduce(dir + "/results.json", dir + "/report.md").ok);
     cfg.md_shares = {0.0, 0.0001, 0.0002, 1.0};
     const auto fine_grid = run_flagship(cfg);
     CHECK_NE(fine_grid.cells[0].name, fine_grid.cells[1].name);
@@ -199,41 +211,29 @@ AX_TEST(fill_count_difference_is_signed_without_underflow) {
 // ---------------- §36: the engine itself must show the placement ----------------
 
 AX_TEST(stage_placement_is_realized_in_engine_timestamps) {
-    // Two allocations with the SAME total, different placement. The
-    // engine-measured mean stage latencies must move in the intended
-    // direction and the SUM of trader-side stages must be equal.
-    const LatencyAllocation observe_heavy = allocation_on_slice(8000, 0.75);
-    const LatencyAllocation action_heavy = allocation_on_slice(8000, 0.0);
-    CHECK_EQ(observe_heavy.total_ns(), action_heavy.total_ns());
-    CHECK_NE(observe_heavy.md_transit_ns, action_heavy.md_transit_ns);
-    CHECK_NE(observe_heavy.decision_ns, action_heavy.decision_ns);
-
-    auto run_with = [&](const LatencyAllocation& alloc) {
-        WorldConfig cfg = alloc.apply_to(WorldConfig{});
-        cfg.journal_events = false;
-        cfg.horizon_ns = 60'000'000;
-        cfg.warmup_ns = 2'000'000;
-        cfg.sim.taker_self_excitation = 0.9;  // active regime: fills happen
-        World w(cfg, 2026);
-        w.run();
-        const RunStats& s = w.stats();
-        return std::pair<u64, std::pair<double, double>>{
-            s.stage_traced_fills,
-            {static_cast<double>(s.stage_sum_decision_to_depart) / (s.stage_traced_fills ? s.stage_traced_fills : 1),
-             static_cast<double>(s.stage_sum_depart_to_gateway) / (s.stage_traced_fills ? s.stage_traced_fills : 1)}};
-    };
-    const auto [n_a, dec_a] = run_with(action_heavy);
-    const auto [n_b, dec_b] = run_with(observe_heavy);
-    CHECK(n_a > 0);
-    CHECK(n_b > 0);
-    // decision stage realized mean must track the CONFIGURED decision ns
-    // (exact placement, zero jitter) within a small tolerance driven by
-    // event-quantization (the decision stage is exactly algo_latency_ns:
-    // every traced fill carries it; assert exact equality).
-    CHECK(std::fabs(dec_a.first - static_cast<double>(action_heavy.decision_ns)) < 0.5);
-    CHECK(std::fabs(dec_b.first - static_cast<double>(observe_heavy.decision_ns)) < 0.5);
-    // and they differ across allocations
-    CHECK_NE(dec_a.first, dec_b.first);
+    FlagshipConfig fc;
+    fc.horizon_ns = 60'000'000;
+    fc.md_shares = {0.0, 0.75};
+    fc.seeds = {2026};
+    const auto run = run_flagship(fc);
+    for (const auto& cell : run.cells) {
+        CHECK(validate_allocation(cell.alloc, fc.total_latency_ns));
+        const auto& seed = cell.per_seed.front();
+        CHECK(seed.md_transit_samples > 0);
+        CHECK(seed.action_trace_samples > 0);
+        CHECK_EQ(seed.mean_md_transit_ns, cell.alloc.md_transit_ns);
+        CHECK_EQ(seed.mean_decision_ns, cell.alloc.decision_ns);
+        CHECK_EQ(seed.mean_order_transit_ns, cell.alloc.order_transit_ns);
+    }
+    auto cfg = run.cells.back().alloc.apply_to(WorldConfig{});
+    cfg.journal_events = false;
+    cfg.horizon_ns = fc.horizon_ns;
+    cfg.md_channel.jitter_ns = 100;
+    World jittered(cfg, fc.seeds.front());
+    const auto samples = jittered.run();
+    CHECK(samples.md_transit_samples > 0);
+    CHECK(samples.md_transit_mean_ns > cfg.md_channel.base_delay_ns);
+    CHECK(samples.md_transit_mean_ns < cfg.md_channel.base_delay_ns + cfg.md_channel.jitter_ns);
 }
 
 // ---------------- flagship determinism + artifact discipline ----------------
@@ -265,7 +265,8 @@ AX_TEST(flagship_run_is_deterministic_and_reproducible) {
     CHECK(json.find("\"definition_hash\"") != std::string::npos);
     CHECK(json.find("\"ambiguous") == std::string::npos);  // no stray fields
     // tamper with one recorded hash: reproduction must FAIL
-    const FlagshipReproReport ok_rep = flagship_reproduce("artifacts/testexp_flag/results.json");
+    const FlagshipReproReport ok_rep = flagship_reproduce("artifacts/testexp_flag/results.json",
+                                                         "artifacts/testexp_flag/report.md");
     CHECK(ok_rep.ok);
     std::string tampered = json;
     const std::string needle = "\"final_hash\": " + std::to_string(a.cells[0].per_seed[0].final_state_hash);
@@ -302,14 +303,14 @@ AX_TEST(flagship_rejects_malformed_artifacts) {
     };
     write("fl_bad1.json", "{}");
     CHECK(!flagship_reproduce("artifacts/fl_bad1.json").ok);
-    write("fl_bad2.json", "{\"experiment\": \"x\", \"flow_model\": \"clustered\", "
+    write("fl_bad2.json", "{\"schema_version\": 2, \"experiment\": \"x\", \"flow_model\": \"clustered\", "
                           "\"definition_hash\": 1, \"total_latency_ns\": 8000, "
                           "\"taker_self_excitation\": 0.9, \"bots_observe_shadow\": false, "
                           "\"seeds\": [1], \"cells\": []}");
     CHECK(!flagship_reproduce("artifacts/fl_bad2.json").ok);  // no cells
     CHECK(!flagship_reproduce("artifacts/does_not_exist.json").ok);
     // wrong definition hash: caught loudly
-    write("fl_bad3.json", "{\"experiment\": \"x\", \"flow_model\": \"clustered\", "
+    write("fl_bad3.json", "{\"schema_version\": 2, \"experiment\": \"x\", \"flow_model\": \"clustered\", "
                           "\"definition_hash\": 123, \"total_latency_ns\": 8000, "
                           "\"taker_self_excitation\": 0.9, \"bots_observe_shadow\": false, "
                           "\"seeds\": [2026], \"cells\": []}");
@@ -320,32 +321,28 @@ AX_TEST(flagship_rejects_malformed_artifacts) {
 }
 
 AX_TEST(flagship_rejects_incomplete_seed_records) {
-    const std::string source=std::string(AX_SOURCE_DIR)+"/experiments/FLAGSHIP-clustered-reactive/results.json";
-    auto* file=std::fopen(source.c_str(),"rb"); CHECK(file); if(!file)return;
-    std::string text; char buffer[4096]; size_t size;
-    do { size = std::fread(buffer, 1, sizeof buffer, file); text.append(buffer, size); } while (size == sizeof buffer);
-    CHECK(!std::ferror(file));
-    std::fclose(file);
+    FlagshipConfig fc;
+    fc.horizon_ns = 1;
+    fc.md_shares = {0, 1};
+    fc.seeds = {2026, 2027};
+    std::string text = flagship_to_json(run_flagship(fc));
     const auto at=text.find("{\"seed\":"); CHECK_NE(at,std::string::npos); if(at==std::string::npos)return;
     const auto end=text.find('}',at); CHECK_NE(end,std::string::npos); if(end==std::string::npos)return;
     text.erase(at,end-at+1);
     std::filesystem::create_directories("artifacts");
     const std::string path="artifacts/incomplete_flagship.json";
-    file=std::fopen(path.c_str(),"wb"); CHECK(file); if(!file)return;
+    auto* file=std::fopen(path.c_str(),"wb"); CHECK(file); if(!file)return;
     std::fwrite(text.data(),1,text.size(),file); std::fclose(file);
     const auto result=flagship_reproduce(path); CHECK(!result.ok);
     CHECK(result.detail.find("seed")!=std::string::npos);
 }
 
 AX_TEST(flagship_rejects_out_of_range_durations) {
-    const std::string source = std::string(AX_SOURCE_DIR) +
-        "/experiments/FLAGSHIP-clustered-reactive/results.json";
-    auto* file = std::fopen(source.c_str(), "rb");
-    CHECK(file); if (!file) return;
-    std::string original; char buffer[4096]; size_t size;
-    do { size = std::fread(buffer, 1, sizeof buffer, file); original.append(buffer, size); } while (size == sizeof buffer);
-    CHECK(!std::ferror(file));
-    std::fclose(file);
+    FlagshipConfig fc;
+    fc.horizon_ns = 1;
+    fc.md_shares = {0, 1};
+    fc.seeds = {2026};
+    const std::string original = flagship_to_json(run_flagship(fc));
     std::filesystem::create_directories("artifacts");
     for (const char* key : {"horizon_ns", "warmup_ns"}) {
         for (const char* value : {"9223372036854775808", "-9223372036854777856",
@@ -356,7 +353,7 @@ AX_TEST(flagship_rejects_out_of_range_durations) {
             const auto number = text.find(':', start) + 2;
             text.replace(number, text.find(',', number) - number, value);
             const char* path = "artifacts/out_of_range_flagship.json";
-            file = std::fopen(path, "wb"); CHECK(file); if (!file) return;
+            auto* file = std::fopen(path, "wb"); CHECK(file); if (!file) return;
             std::fwrite(text.data(), 1, text.size(), file); std::fclose(file);
             const auto result = flagship_reproduce(path);
             CHECK(!result.ok);

@@ -92,6 +92,35 @@ CorrResult pearson(const std::vector<double>& x, const std::vector<double>& y) {
 }
 
 
+double paired_sign_flip_pvalue(const std::vector<double>& d, u64 seed, u64 reps) {
+    const size_t n = d.size();
+    if (n == 0) return 1.0;
+    if (reps == 0) throw std::invalid_argument("sign-flip repetitions must be positive");
+    double obs = 0.0;
+    for (double v : d) obs += v;
+    if (!std::isfinite(obs)) throw std::invalid_argument("invalid sign-flip differences");
+    // enumerate all sign flips (n <= 20: <= 1M flips)
+    if (n <= kExactSignFlipMaxPairs) {
+        const size_t flips = 1u << n;
+        size_t ge = 0;
+        for (size_t f = 0; f < flips; ++f) {
+            double s = 0.0;
+            for (size_t i = 0; i < n; ++i) s += (f >> i) & 1u ? -d[i] : d[i];
+            if (std::fabs(s) >= std::fabs(obs)) ++ge;
+        }
+        return static_cast<double>(ge) / static_cast<double>(flips);
+    }
+    // seeded random flips
+    Rng rng(Rng::stream(seed, 0x5045524Dull).state);
+    u64 ge = 0;
+    for (u64 r = 0; r < reps; ++r) {
+        double s = 0.0;
+        for (size_t i = 0; i < n; ++i) s += rng.chance(0.5) ? -d[i] : d[i];
+        if (std::fabs(s) >= std::fabs(obs)) ++ge;
+    }
+    return (static_cast<double>(ge) + 1.0) / (static_cast<double>(reps) + 1.0);
+}
+
 std::vector<double> bonferroni(const std::vector<double>& p) {
     validate_pvalues(p);
     std::vector<double> q(p.size());
